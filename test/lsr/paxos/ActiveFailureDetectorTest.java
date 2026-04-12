@@ -1,30 +1,38 @@
 package lsr.paxos;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.BitSet;
 
 import org.junit.Before;
 import org.junit.Test;
 
 import lsr.common.ProcessDescriptorHelper;
+import lsr.paxos.messages.Alive;
+import lsr.paxos.messages.AliveReply;
 import lsr.paxos.messages.Message;
+import lsr.paxos.network.MessageHandler;
 import lsr.paxos.network.Network;
 import lsr.paxos.storage.InMemoryStorage;
 import lsr.paxos.storage.Storage;
 
 public class ActiveFailureDetectorTest {
     private ActiveFailureDetector failureDetector;
+    private StubNetwork network;
 
     @Before
     public void setUp() {
         ProcessDescriptorHelper.initialize(3, 0);
         Storage storage = new InMemoryStorage();
+        network = new StubNetwork();
         failureDetector = new ActiveFailureDetector(new FailureDetector.FailureDetectorListener() {
             @Override
             public void suspect(int view) {
             }
-        }, new StubNetwork(), storage);
+        }, network, storage);
     }
 
     @Test
@@ -58,9 +66,68 @@ public class ActiveFailureDetectorTest {
         failureDetector.setSendTimeout(-1);
     }
 
+    @Test
+    public void shouldSendAliveReplyWhenFollowerReceivesAlive() throws Exception {
+        int view = 1;
+        int leader = view % 3;
+        int logNextId = 10;
+        long heartbeatId = 123L;
+
+        setFailureDetectorView(failureDetector, view);
+
+        invokeOnMessageReceived(failureDetector, new Alive(view, logNextId, heartbeatId), leader);
+
+        assertEquals(1, network.unicastCount);
+        assertEquals(leader, network.lastDestination);
+        assertTrue(network.lastUnicastMessage instanceof AliveReply);
+        AliveReply reply = (AliveReply) network.lastUnicastMessage;
+        assertEquals(view, reply.getView());
+        assertEquals(heartbeatId, reply.getHeartbeatId());
+    }
+
+    @Test
+    public void shouldMeasureRttWhenLeaderReceivesAliveReply() throws Exception {
+        long heartbeatId = 42L;
+        long sentTs = ActiveFailureDetector.getTime() - 30;
+
+        Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
+                "trackHeartbeatSendTime", long.class, long.class);
+        trackHeartbeat.setAccessible(true);
+        trackHeartbeat.invoke(failureDetector, heartbeatId, sentTs);
+
+        invokeOnMessageReceived(failureDetector, new AliveReply(0, heartbeatId), 1);
+
+        long rtt = failureDetector.getLastRttForReplica(1);
+        long oneWayDelay = failureDetector.getLastOneWayDelayForReplica(1);
+        assertTrue(rtt >= 0);
+        assertEquals(rtt / 2, oneWayDelay);
+    }
+
+    private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)
+            throws Exception {
+        Field innerListenerField = ActiveFailureDetector.class.getDeclaredField("innerListener");
+        innerListenerField.setAccessible(true);
+        MessageHandler listener = (MessageHandler) innerListenerField.get(fd);
+        listener.onMessageReceived(message, sender);
+    }
+
+    private static void setFailureDetectorView(ActiveFailureDetector detector, int view)
+            throws Exception {
+        Field viewField = ActiveFailureDetector.class.getDeclaredField("view");
+        viewField.setAccessible(true);
+        viewField.setInt(detector, view);
+    }
+
     private static class StubNetwork extends Network {
+        private Message lastUnicastMessage;
+        private int lastDestination = -1;
+        private int unicastCount;
+
         @Override
         protected void send(Message message, int destination) {
+            this.lastUnicastMessage = message;
+            this.lastDestination = destination;
+            this.unicastCount++;
         }
 
         @Override

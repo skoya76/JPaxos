@@ -3,8 +3,11 @@ package lsr.paxos;
 import static lsr.common.ProcessDescriptor.processDescriptor;
 
 import java.util.BitSet;
+import java.util.HashMap;
+import java.util.Map;
 
 import lsr.paxos.messages.Alive;
+import lsr.paxos.messages.AliveReply;
 import lsr.paxos.messages.Message;
 import lsr.paxos.messages.MessageType;
 import lsr.paxos.network.MessageHandler;
@@ -41,6 +44,16 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private volatile long lastHeartbeatRcvdTS;
     /** Leader role: time when the last message or heartbeat was sent to all */
     private volatile long lastHeartbeatSentTS;
+    /** Leader role: monotonically increasing heartbeat id */
+    private long nextHeartbeatId;
+    /** Leader role: send timestamp of recent heartbeat ids */
+    private final Map<Long, Long> heartbeatSendTsById = new HashMap<Long, Long>();
+    /** Leader role: last RTT observed from each follower */
+    private final Map<Integer, Long> lastRttByFollower = new HashMap<Integer, Long>();
+    /** Leader role: last one-way delay estimate (RTT/2) for each follower */
+    private final Map<Integer, Long> lastOneWayDelayByFollower = new HashMap<Integer, Long>();
+    private long oldestTrackedHeartbeatId;
+    private static final int MAX_TRACKED_HEARTBEATS = 4096;
 
     private final FailureDetectorListener fdListener;
 
@@ -106,6 +119,20 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
     }
 
+    public long getLastRttForReplica(int replicaId) {
+        synchronized (this) {
+            Long rtt = lastRttByFollower.get(replicaId);
+            return rtt == null ? -1 : rtt.longValue();
+        }
+    }
+
+    public long getLastOneWayDelayForReplica(int replicaId) {
+        synchronized (this) {
+            Long oneWayDelay = lastOneWayDelayByFollower.get(replicaId);
+            return oneWayDelay == null ? -1 : oneWayDelay.longValue();
+        }
+    }
+
     /**
      * Starts failure detector.
      */
@@ -165,7 +192,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     // Leader role
                     if (processDescriptor.isLocalProcessLeader(view)) {
                         // Send
-                        Alive alive = new Alive(view, storage.getLog().getNextId());
+                        long heartbeatId = nextHeartbeatId++;
+                        Alive alive = new Alive(view, storage.getLog().getNextId(), heartbeatId);
+                        trackHeartbeatSendTime(heartbeatId, now);
                         network.sendToOthers(alive);
                         lastHeartbeatSentTS = now;
                         long nextSend = lastHeartbeatSentTS + sendTimeout;
@@ -240,14 +269,24 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     final class InnerMessageHandler implements MessageHandler {
 
         public void onMessageReceived(Message message, int sender) {
-            // followers only.
-            if (processDescriptor.isLocalProcessLeader(view))
+            if (processDescriptor.isLocalProcessLeader(view)) {
+                if (message.getType() == MessageType.AliveReply) {
+                    handleAliveReply((AliveReply) message, sender);
+                }
                 return;
+            }
 
             // Use the message as heartbeat if the local process is
             // a follower and the sender is the leader of the current view
             if (sender == processDescriptor.getLeaderOfView(view)) {
                 lastHeartbeatRcvdTS = getTime();
+                if (message.getType() == MessageType.Alive) {
+                    Alive alive = (Alive) message;
+                    if (alive.getHeartbeatId() >= 0) {
+                        network.sendMessage(
+                                new AliveReply(alive.getView(), alive.getHeartbeatId()), sender);
+                    }
+                }
             }
         }
 
@@ -283,6 +322,35 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private static void validateTimeout(String timeoutName, int timeoutValue) {
         if (timeoutValue <= 0) {
             throw new IllegalArgumentException(timeoutName + " must be positive.");
+        }
+    }
+
+    private void trackHeartbeatSendTime(long heartbeatId, long sentTs) {
+        synchronized (this) {
+            heartbeatSendTsById.put(heartbeatId, sentTs);
+            while (heartbeatSendTsById.size() > MAX_TRACKED_HEARTBEATS) {
+                heartbeatSendTsById.remove(oldestTrackedHeartbeatId);
+                oldestTrackedHeartbeatId++;
+            }
+        }
+    }
+
+    private void handleAliveReply(AliveReply reply, int sender) {
+        synchronized (this) {
+            if (reply.getView() != view) {
+                return;
+            }
+            Long sentTs = heartbeatSendTsById.get(reply.getHeartbeatId());
+            if (sentTs == null) {
+                return;
+            }
+            long now = getTime();
+            long rtt = now - sentTs.longValue();
+            if (rtt < 0) {
+                return;
+            }
+            lastRttByFollower.put(sender, rtt);
+            lastOneWayDelayByFollower.put(sender, rtt / 2);
         }
     }
 

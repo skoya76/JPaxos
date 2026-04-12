@@ -15,14 +15,20 @@ public class Alive extends Message {
      * leader.
      */
     private final int logNextId;
+    private final long heartbeatId;
 
     /**
      * Creates new <code>Alive</code> message with specified view number and
      * highest instance ID + 1.
      */
     public Alive(int view, int logNextId) {
+        this(view, logNextId, -1L);
+    }
+
+    public Alive(int view, int logNextId, long heartbeatId) {
         super(view);
         this.logNextId = logNextId;
+        this.heartbeatId = heartbeatId;
     }
 
     /**
@@ -35,11 +41,13 @@ public class Alive extends Message {
     public Alive(DataInputStream input) throws IOException {
         super(input);
         logNextId = input.readInt();
+        heartbeatId = input.readLong();
     }
 
     public Alive(ByteBuffer bb) {
         super(bb);
         logNextId = bb.getInt();
+        heartbeatId = bb.getLong();
     }
 
     /**
@@ -49,19 +57,25 @@ public class Alive extends Message {
         return logNextId;
     }
 
+    public long getHeartbeatId() {
+        return heartbeatId;
+    }
+
     public MessageType getType() {
         return MessageType.Alive;
     }
 
     public int byteSize() {
-        return super.byteSize() + 4;
+        return super.byteSize() + 4 + 8;
     }
 
     public String toString() {
-        return "ALIVE (" + super.toString() + ", logsize: " + logNextId + ")";
+        return "ALIVE (" + super.toString() + ", logsize: " + logNextId +
+               ", heartbeatId: " + heartbeatId + ")";
     }
 
     protected void write(ByteBuffer bb) {
         bb.putInt(logNextId);
+        bb.putLong(heartbeatId);
     }
 }
