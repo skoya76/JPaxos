@@ -126,7 +126,8 @@ public class ActiveFailureDetectorTest {
         long oneWayDelay = failureDetector.getLastOneWayDelayForReplica(1);
         assertTrue(rtt >= 0);
         assertEquals(rtt / 2, oneWayDelay);
-        assertEquals(suggestedHeartbeatInterval, failureDetector.getSendTimeout());
+        assertEquals(suggestedHeartbeatInterval,
+                failureDetector.getPerFollowerSendTimeout(followerId));
     }
 
     @Test
@@ -140,11 +141,18 @@ public class ActiveFailureDetectorTest {
         trackHeartbeat.setAccessible(true);
         trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
 
-        int originalSendTimeout = failureDetector.getSendTimeout();
+        int validInterval = 220;
         invokeOnMessageReceived(failureDetector,
-                new AliveReply(0, heartbeatId, (long) Integer.MAX_VALUE + 1), 1);
+                new AliveReply(0, heartbeatId, validInterval), followerId);
+        assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
 
-        assertEquals(originalSendTimeout, failureDetector.getSendTimeout());
+        long invalidHeartbeatId = 101L;
+        trackHeartbeat.invoke(failureDetector, followerId, invalidHeartbeatId,
+                ActiveFailureDetector.getTime() - 30);
+        invokeOnMessageReceived(failureDetector,
+                new AliveReply(0, invalidHeartbeatId, (long) Integer.MAX_VALUE + 1), followerId);
+
+        assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
     }
 
     @Test
@@ -217,9 +225,9 @@ public class ActiveFailureDetectorTest {
 
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
         assertEquals(14, failureDetector.getSuspectTimeout());
-        assertEquals(4, reply.getHeartbeatInterval());
+        assertEquals(7, reply.getHeartbeatInterval());
         assertEquals(14, failureDetector.getLastComputedEt());
-        assertEquals(4, failureDetector.getLastSuggestedHeartbeatInterval());
+        assertEquals(7, failureDetector.getLastSuggestedHeartbeatInterval());
     }
 
     @Test
