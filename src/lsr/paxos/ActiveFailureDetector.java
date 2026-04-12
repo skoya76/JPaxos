@@ -117,6 +117,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         return sendTimeout;
     }
 
+    public int getPerFollowerSendTimeout(int replicaId) {
+        synchronized (this) {
+            Integer timeout = perFollowerSendTimeouts.get(replicaId);
+            return timeout == null ? -1 : timeout.intValue();
+        }
+    }
+
     public void setSuspectTimeout(int suspectTimeout) {
         validateTimeout("suspectTimeout", suspectTimeout);
         synchronized (this) {
@@ -722,7 +729,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         } else if (packetLossRate >= 1.0) {
             return -1;
         } else {
-            double logTerm = Math.log(1.0 - targetProbability) / Math.log(packetLossRate) + 1.0;
+            double logTerm = Math.log(1.0 - targetProbability) / Math.log(packetLossRate);
             ceilLogTerm = Math.ceil(logTerm);
         }
         double interval = Math.floor(et / (ceilLogTerm + 1.0));
