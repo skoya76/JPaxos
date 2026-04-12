@@ -12,23 +12,20 @@ public class AliveReply extends Message {
 
     private final long heartbeatId;
     private final long heartbeatTimestamp;
-    private final long rtt;
     private final long heartbeatInterval;
 
     public AliveReply(int view, long heartbeatId) {
-        this(view, heartbeatId, -1L, -1L, -1L);
+        this(view, heartbeatId, -1L, -1L);
     }
 
     public AliveReply(int view, long heartbeatId, long heartbeatInterval) {
-        this(view, heartbeatId, -1L, -1L, heartbeatInterval);
+        this(view, heartbeatId, -1L, heartbeatInterval);
     }
 
-    public AliveReply(int view, long heartbeatId, long heartbeatTimestamp, long rtt,
-                      long heartbeatInterval) {
+    public AliveReply(int view, long heartbeatId, long heartbeatTimestamp, long heartbeatInterval) {
         super(view);
         this.heartbeatId = heartbeatId;
         this.heartbeatTimestamp = heartbeatTimestamp;
-        this.rtt = rtt;
         this.heartbeatInterval = heartbeatInterval;
     }
 
@@ -36,7 +33,6 @@ public class AliveReply extends Message {
         super(input);
         heartbeatId = input.readLong();
         heartbeatTimestamp = input.readLong();
-        rtt = input.readLong();
         heartbeatInterval = input.readLong();
     }
 
@@ -44,7 +40,6 @@ public class AliveReply extends Message {
         super(bb);
         heartbeatId = bb.getLong();
         heartbeatTimestamp = bb.getLong();
-        rtt = bb.getLong();
         heartbeatInterval = bb.getLong();
     }
 
@@ -54,10 +49,6 @@ public class AliveReply extends Message {
 
     public long getHeartbeatTimestamp() {
         return heartbeatTimestamp;
-    }
-
-    public long getRtt() {
-        return rtt;
     }
 
     public long getHeartbeatInterval() {
@@ -71,14 +62,13 @@ public class AliveReply extends Message {
 
     @Override
     public int byteSize() {
-        return super.byteSize() + 8 + 8 + 8 + 8;
+        return super.byteSize() + 8 + 8 + 8;
     }
 
     @Override
     protected void write(ByteBuffer bb) {
         bb.putLong(heartbeatId);
         bb.putLong(heartbeatTimestamp);
-        bb.putLong(rtt);
         bb.putLong(heartbeatInterval);
     }
 
@@ -86,7 +76,6 @@ public class AliveReply extends Message {
     public String toString() {
         return "ALIVE_REPLY (" + super.toString() + ", heartbeatId: " + heartbeatId +
                ", heartbeatTimestamp: " + heartbeatTimestamp +
-               ", rtt: " + rtt +
                ", heartbeatInterval: " + heartbeatInterval + ")";
     }
 }
