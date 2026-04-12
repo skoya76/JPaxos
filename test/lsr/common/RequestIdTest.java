@@ -24,12 +24,13 @@ public class RequestIdTest {
         assertTrue(second.compareTo(first) > 0);
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void shouldNotCompareRequestsIdFromDifferentClients() {
+    @Test
+    public void shouldOrderByClientIdWhenClientsDiffer() {
         RequestId first = new RequestId(1, 2);
         RequestId second = new RequestId(2, 3);
 
-        first.compareTo(second);
+        assertTrue(first.compareTo(second) < 0);
+        assertTrue(second.compareTo(first) > 0);
     }
 
     @Test

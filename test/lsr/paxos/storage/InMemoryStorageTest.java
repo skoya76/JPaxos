@@ -4,6 +4,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -55,16 +56,9 @@ public class InMemoryStorageTest {
         map.put(3, new InMemoryConsensusInstance(3, LogEntryState.DECIDED, 4, new byte[] {44}));
 
         
-        final Log logR = new InMemoryLog() {
-            @Override
-            public SortedMap<Integer, ConsensusInstance> getInstanceMap() {
-                return map;
-            }   
-        };
-        
-        Log log = mock(logR.getClass());
+        Log log = mock(Log.class);
         storage = new InMemoryStorage(log);
-        when(log.getInstanceMap()).thenCallRealMethod();
+        doReturn(map).when(log).getInstanceMap();
         when(log.getNextId()).thenReturn(5);
 
         storage.updateFirstUncommitted();
