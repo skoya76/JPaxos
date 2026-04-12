@@ -12,17 +12,19 @@ import org.junit.Test;
 public class AliveTest extends AbstractMessageTestCase<Alive> {
     private int view = 12;
     private int logSize = 32;
+    private long heartbeatId = 77;
     private Alive alive;
 
     @Before
     public void setUp() {
-        alive = new Alive(view, logSize);
+        alive = new Alive(view, logSize, heartbeatId);
     }
 
     @Test
     public void shouldInitializeFields() {
         assertEquals(view, alive.getView());
         assertEquals(logSize, alive.getLogNextId());
+        assertEquals(heartbeatId, alive.getHeartbeatId());
     }
 
     @Test
@@ -55,5 +57,6 @@ public class AliveTest extends AbstractMessageTestCase<Alive> {
         assertEquals(expected.getType(), actual.getType());
 
         assertEquals(expected.getLogNextId(), actual.getLogNextId());
+        assertEquals(expected.getHeartbeatId(), actual.getHeartbeatId());
     }
 }
