@@ -272,6 +272,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         // buildPerFollowerAlive guarantees an entry for every
                         // replicaId != localId, so alive is never null here.
                         long sendTs = getTime();
+                        alive.setHeartbeatTimestamp(sendTs);
                         alive.setSentTime(sendTs);
                         network.sendMessage(alive, replicaId);
                         synchronized (this) {
@@ -358,8 +359,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
                         AliveReply reply = new AliveReply(alive.getView(), alive.getHeartbeatId(),
+                                alive.getHeartbeatTimestamp(), -1L,
                                 calculatedHeartbeatInterval);
-                        reply.setSentTime(alive.getSentTime());
                         network.sendMessage(reply, sender);
                     }
                 } else {
@@ -412,7 +413,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             if (reply.getView() != view) {
                 return;
             }
-            long sentTs = reply.getSentTime();
+            long sentTs = reply.getHeartbeatTimestamp();
+            if (sentTs < 0) {
+                return;
+            }
             long now = getTime();
             long rtt = now - sentTs;
             if (rtt < 0) {

@@ -113,8 +113,8 @@ public class ActiveFailureDetectorTest {
         int followerId = 1;
 
         int suggestedHeartbeatInterval = 220;
-        AliveReply reply = new AliveReply(0, heartbeatId, suggestedHeartbeatInterval);
-        reply.setSentTime(ActiveFailureDetector.getTime() - 30);
+        AliveReply reply = new AliveReply(0, heartbeatId,
+                ActiveFailureDetector.getTime() - 30, -1L, suggestedHeartbeatInterval);
         invokeOnMessageReceived(failureDetector, reply, 1);
 
         long rtt = failureDetector.getLastRttForReplica(1);
@@ -131,15 +131,14 @@ public class ActiveFailureDetectorTest {
         int followerId = 1;
 
         int validInterval = 220;
-        AliveReply reply = new AliveReply(0, heartbeatId, validInterval);
-        reply.setSentTime(ActiveFailureDetector.getTime() - 30);
+        AliveReply reply = new AliveReply(0, heartbeatId,
+                ActiveFailureDetector.getTime() - 30, -1L, validInterval);
         invokeOnMessageReceived(failureDetector, reply, followerId);
         assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
 
         long invalidHeartbeatId = 101L;
         AliveReply invalidReply = new AliveReply(0, invalidHeartbeatId,
-                (long) Integer.MAX_VALUE + 1);
-        invalidReply.setSentTime(ActiveFailureDetector.getTime() - 30);
+                ActiveFailureDetector.getTime() - 30, -1L, (long) Integer.MAX_VALUE + 1);
         invokeOnMessageReceived(failureDetector, invalidReply, followerId);
 
         assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));

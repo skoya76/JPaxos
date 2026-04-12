@@ -16,6 +16,7 @@ public class Alive extends Message {
      */
     private final int logNextId;
     private final long heartbeatId;
+    private long heartbeatTimestamp;
     private final long rtt;
     private final long heartbeatInterval;
 
@@ -24,18 +25,24 @@ public class Alive extends Message {
      * highest instance ID + 1.
      */
     public Alive(int view, int logNextId) {
-        this(view, logNextId, -1L, -1L, -1L);
+        this(view, logNextId, -1L, -1L, -1L, -1L);
     }
 
     public Alive(int view, int logNextId, long heartbeatId) {
-        this(view, logNextId, heartbeatId, -1L, -1L);
+        this(view, logNextId, heartbeatId, -1L, -1L, -1L);
     }
 
     public Alive(int view, int logNextId, long heartbeatId, long rtt,
                  long heartbeatInterval) {
+        this(view, logNextId, heartbeatId, -1L, rtt, heartbeatInterval);
+    }
+
+    public Alive(int view, int logNextId, long heartbeatId, long heartbeatTimestamp, long rtt,
+                 long heartbeatInterval) {
         super(view);
         this.logNextId = logNextId;
         this.heartbeatId = heartbeatId;
+        this.heartbeatTimestamp = heartbeatTimestamp;
         this.rtt = rtt;
         this.heartbeatInterval = heartbeatInterval;
     }
@@ -51,6 +58,7 @@ public class Alive extends Message {
         super(input);
         logNextId = input.readInt();
         heartbeatId = input.readLong();
+        heartbeatTimestamp = input.readLong();
         rtt = input.readLong();
         heartbeatInterval = input.readLong();
     }
@@ -59,6 +67,7 @@ public class Alive extends Message {
         super(bb);
         logNextId = bb.getInt();
         heartbeatId = bb.getLong();
+        heartbeatTimestamp = bb.getLong();
         rtt = bb.getLong();
         heartbeatInterval = bb.getLong();
     }
@@ -74,6 +83,14 @@ public class Alive extends Message {
         return heartbeatId;
     }
 
+    public long getHeartbeatTimestamp() {
+        return heartbeatTimestamp;
+    }
+
+    public void setHeartbeatTimestamp(long heartbeatTimestamp) {
+        this.heartbeatTimestamp = heartbeatTimestamp;
+    }
+
     public long getRtt() {
         return rtt;
     }
@@ -87,12 +104,13 @@ public class Alive extends Message {
     }
 
     public int byteSize() {
-        return super.byteSize() + 4 + 8 + 8 + 8;
+        return super.byteSize() + 4 + 8 + 8 + 8 + 8;
     }
 
     public String toString() {
         return "ALIVE (" + super.toString() + ", logsize: " + logNextId +
                ", heartbeatId: " + heartbeatId +
+               ", heartbeatTimestamp: " + heartbeatTimestamp +
                ", rtt: " + rtt +
                ", heartbeatInterval: " + heartbeatInterval + ")";
     }
@@ -100,6 +118,7 @@ public class Alive extends Message {
     protected void write(ByteBuffer bb) {
         bb.putInt(logNextId);
         bb.putLong(heartbeatId);
+        bb.putLong(heartbeatTimestamp);
         bb.putLong(rtt);
         bb.putLong(heartbeatInterval);
     }
