@@ -3,6 +3,8 @@
 <project name="JPaxos" default="build" basedir=".">
 	<property name="sources" location="${basedir}/src" />
 	<property name="test.dir" location="${basedir}/test" />
+	<property name="test.includes" value="**/*Test.java" />
+	<property name="test.excludes" value="" />
 	<property name="classes" location="${basedir}/bin" />
 	<property name="javadoc" location="${basedir}/doc/javadoc" />
 	<property name="version" value="1.0" />
@@ -64,7 +66,7 @@
 			</classpath>
 			<formatter type="brief" usefile="false" />
 			<batchtest>
-				<fileset dir="${test.dir}" includes="**/*Test.java" />
+				<fileset dir="${test.dir}" includes="${test.includes}" excludes="${test.excludes}" />
 			</batchtest>
 			<assertions>
 				<enable />
