@@ -110,17 +110,12 @@ public class ActiveFailureDetectorTest {
     @Test
     public void shouldMeasureRttWhenLeaderReceivesAliveReply() throws Exception {
         long heartbeatId = 42L;
-        long sentTs = ActiveFailureDetector.getTime() - 30;
         int followerId = 1;
 
-        Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
-                "trackHeartbeatSendTime", int.class, long.class, long.class);
-        trackHeartbeat.setAccessible(true);
-        trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
-
         int suggestedHeartbeatInterval = 220;
-        invokeOnMessageReceived(failureDetector,
-                new AliveReply(0, heartbeatId, suggestedHeartbeatInterval), 1);
+        AliveReply reply = new AliveReply(0, heartbeatId, suggestedHeartbeatInterval);
+        reply.setSentTime(ActiveFailureDetector.getTime() - 30);
+        invokeOnMessageReceived(failureDetector, reply, 1);
 
         long rtt = failureDetector.getLastRttForReplica(1);
         long oneWayDelay = failureDetector.getLastOneWayDelayForReplica(1);
@@ -133,24 +128,19 @@ public class ActiveFailureDetectorTest {
     @Test
     public void shouldIgnoreOutOfRangeHeartbeatIntervalFeedback() throws Exception {
         long heartbeatId = 100L;
-        long sentTs = ActiveFailureDetector.getTime() - 30;
         int followerId = 1;
 
-        Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
-                "trackHeartbeatSendTime", int.class, long.class, long.class);
-        trackHeartbeat.setAccessible(true);
-        trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
-
         int validInterval = 220;
-        invokeOnMessageReceived(failureDetector,
-                new AliveReply(0, heartbeatId, validInterval), followerId);
+        AliveReply reply = new AliveReply(0, heartbeatId, validInterval);
+        reply.setSentTime(ActiveFailureDetector.getTime() - 30);
+        invokeOnMessageReceived(failureDetector, reply, followerId);
         assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
 
         long invalidHeartbeatId = 101L;
-        trackHeartbeat.invoke(failureDetector, followerId, invalidHeartbeatId,
-                ActiveFailureDetector.getTime() - 30);
-        invokeOnMessageReceived(failureDetector,
-                new AliveReply(0, invalidHeartbeatId, (long) Integer.MAX_VALUE + 1), followerId);
+        AliveReply invalidReply = new AliveReply(0, invalidHeartbeatId,
+                (long) Integer.MAX_VALUE + 1);
+        invalidReply.setSentTime(ActiveFailureDetector.getTime() - 30);
+        invokeOnMessageReceived(failureDetector, invalidReply, followerId);
 
         assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
     }
@@ -192,16 +182,22 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
-    public void shouldIgnoreNonMonotonicHeartbeatIds() throws Exception {
+    public void shouldAcceptOutOfOrderHeartbeatIdsPerPaperSpec() throws Exception {
+        // Paper §III-B: "the follower inserts the IDs into the list in ascending order"
+        // and "arrival order of heartbeat messages is not guaranteed".
+        // All received IDs (including out-of-order ones) must be stored.
+        // Duplicates are silently ignored via TreeSet.
         int view = 1;
         int leader = view % 3;
 
         setFailureDetectorView(failureDetector, view);
         invokeOnMessageReceived(failureDetector, new Alive(view, 10, 5, 10, 100), leader);
+        // id=4 arrives after id=5 (out-of-order / delayed) → must still be recorded
         invokeOnMessageReceived(failureDetector, new Alive(view, 10, 4, 12, 100), leader);
         invokeOnMessageReceived(failureDetector, new Alive(view, 10, 6, 14, 100), leader);
 
-        assertEquals(2, failureDetector.getObservedHeartbeatIdCount());
+        // All 3 distinct IDs should be in the set: {4, 5, 6}
+        assertEquals(3, failureDetector.getObservedHeartbeatIdCount());
     }
 
     @Test
