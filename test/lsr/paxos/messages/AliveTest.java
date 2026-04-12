@@ -13,13 +13,14 @@ public class AliveTest extends AbstractMessageTestCase<Alive> {
     private int view = 12;
     private int logSize = 32;
     private long heartbeatId = 77;
+    private long heartbeatTimestamp = 1001;
     private long rtt = 51;
     private long heartbeatInterval = 123;
     private Alive alive;
 
     @Before
     public void setUp() {
-        alive = new Alive(view, logSize, heartbeatId, rtt, heartbeatInterval);
+        alive = new Alive(view, logSize, heartbeatId, heartbeatTimestamp, rtt, heartbeatInterval);
     }
 
     @Test
@@ -27,6 +28,7 @@ public class AliveTest extends AbstractMessageTestCase<Alive> {
         assertEquals(view, alive.getView());
         assertEquals(logSize, alive.getLogNextId());
         assertEquals(heartbeatId, alive.getHeartbeatId());
+        assertEquals(heartbeatTimestamp, alive.getHeartbeatTimestamp());
         assertEquals(rtt, alive.getRtt());
         assertEquals(heartbeatInterval, alive.getHeartbeatInterval());
     }
@@ -62,6 +64,7 @@ public class AliveTest extends AbstractMessageTestCase<Alive> {
 
         assertEquals(expected.getLogNextId(), actual.getLogNextId());
         assertEquals(expected.getHeartbeatId(), actual.getHeartbeatId());
+        assertEquals(expected.getHeartbeatTimestamp(), actual.getHeartbeatTimestamp());
         assertEquals(expected.getRtt(), actual.getRtt());
         assertEquals(expected.getHeartbeatInterval(), actual.getHeartbeatInterval());
     }
