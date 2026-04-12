@@ -83,6 +83,7 @@ public class ActiveFailureDetectorTest {
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
         assertEquals(view, reply.getView());
         assertEquals(heartbeatId, reply.getHeartbeatId());
+        assertEquals(failureDetector.getSuspectTimeout() / 2, reply.getHeartbeatInterval());
     }
 
     @Test
@@ -95,12 +96,32 @@ public class ActiveFailureDetectorTest {
         trackHeartbeat.setAccessible(true);
         trackHeartbeat.invoke(failureDetector, heartbeatId, sentTs);
 
-        invokeOnMessageReceived(failureDetector, new AliveReply(0, heartbeatId), 1);
+        int suggestedHeartbeatInterval = 220;
+        invokeOnMessageReceived(failureDetector,
+                new AliveReply(0, heartbeatId, suggestedHeartbeatInterval), 1);
 
         long rtt = failureDetector.getLastRttForReplica(1);
         long oneWayDelay = failureDetector.getLastOneWayDelayForReplica(1);
         assertTrue(rtt >= 0);
         assertEquals(rtt / 2, oneWayDelay);
+        assertEquals(suggestedHeartbeatInterval, failureDetector.getSendTimeout());
+    }
+
+    @Test
+    public void shouldIgnoreOutOfRangeHeartbeatIntervalFeedback() throws Exception {
+        long heartbeatId = 100L;
+        long sentTs = ActiveFailureDetector.getTime() - 30;
+
+        Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
+                "trackHeartbeatSendTime", long.class, long.class);
+        trackHeartbeat.setAccessible(true);
+        trackHeartbeat.invoke(failureDetector, heartbeatId, sentTs);
+
+        int originalSendTimeout = failureDetector.getSendTimeout();
+        invokeOnMessageReceived(failureDetector,
+                new AliveReply(0, heartbeatId, (long) Integer.MAX_VALUE + 1), 1);
+
+        assertEquals(originalSendTimeout, failureDetector.getSendTimeout());
     }
 
     private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)
