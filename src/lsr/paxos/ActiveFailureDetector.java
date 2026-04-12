@@ -599,7 +599,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             if (lastSuggestedHeartbeatInterval > 0) {
                 return lastSuggestedHeartbeatInterval;
             }
-            return Math.max(1, suspectTimeout / 2);
+            // Keep default leader heartbeat interval until tuning has produced
+            // a concrete suggestion.
+            return -1;
         }
     }
 
@@ -646,7 +648,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             double delta = sample.longValue() - mean;
             variance += delta * delta;
         }
-        variance /= samples.size();
+        variance /= (samples.size() - 1);
         return Math.sqrt(variance);
     }
 
