@@ -16,19 +16,28 @@ public class Alive extends Message {
      */
     private final int logNextId;
     private final long heartbeatId;
+    private final long rtt;
+    private final long heartbeatInterval;
 
     /**
      * Creates new <code>Alive</code> message with specified view number and
      * highest instance ID + 1.
      */
     public Alive(int view, int logNextId) {
-        this(view, logNextId, -1L);
+        this(view, logNextId, -1L, -1L, -1L);
     }
 
     public Alive(int view, int logNextId, long heartbeatId) {
+        this(view, logNextId, heartbeatId, -1L, -1L);
+    }
+
+    public Alive(int view, int logNextId, long heartbeatId, long rtt,
+                 long heartbeatInterval) {
         super(view);
         this.logNextId = logNextId;
         this.heartbeatId = heartbeatId;
+        this.rtt = rtt;
+        this.heartbeatInterval = heartbeatInterval;
     }
 
     /**
@@ -42,12 +51,16 @@ public class Alive extends Message {
         super(input);
         logNextId = input.readInt();
         heartbeatId = input.readLong();
+        rtt = input.readLong();
+        heartbeatInterval = input.readLong();
     }
 
     public Alive(ByteBuffer bb) {
         super(bb);
         logNextId = bb.getInt();
         heartbeatId = bb.getLong();
+        rtt = bb.getLong();
+        heartbeatInterval = bb.getLong();
     }
 
     /**
@@ -61,21 +74,33 @@ public class Alive extends Message {
         return heartbeatId;
     }
 
+    public long getRtt() {
+        return rtt;
+    }
+
+    public long getHeartbeatInterval() {
+        return heartbeatInterval;
+    }
+
     public MessageType getType() {
         return MessageType.Alive;
     }
 
     public int byteSize() {
-        return super.byteSize() + 4 + 8;
+        return super.byteSize() + 4 + 8 + 8 + 8;
     }
 
     public String toString() {
         return "ALIVE (" + super.toString() + ", logsize: " + logNextId +
-               ", heartbeatId: " + heartbeatId + ")";
+               ", heartbeatId: " + heartbeatId +
+               ", rtt: " + rtt +
+               ", heartbeatInterval: " + heartbeatInterval + ")";
     }
 
     protected void write(ByteBuffer bb) {
         bb.putInt(logNextId);
         bb.putLong(heartbeatId);
+        bb.putLong(rtt);
+        bb.putLong(heartbeatInterval);
     }
 }
