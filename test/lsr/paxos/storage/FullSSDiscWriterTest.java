@@ -2,8 +2,10 @@ package lsr.paxos.storage;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.io.DataInputStream;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -59,10 +61,16 @@ public class FullSSDiscWriterTest {
 
     @Test
     public void shouldGetNextLogNumber() throws IOException {
-        String[] s = new String[] {"sync.0.log", "invalid", "sync.2.log", "sync.1.log"};
+        writer.close();
+        new File(directoryPath + "/sync.0.log").createNewFile();
+        new File(directoryPath + "/invalid").createNewFile();
+        new File(directoryPath + "/sync.2.log").createNewFile();
+        new File(directoryPath + "/sync.1.log").createNewFile();
 
-        int lastLogNumber = writer.getLastLogNumber(s);
-        assertEquals(lastLogNumber, 2);
+        writer = new FullSSDiscWriter(directoryPath);
+        writer.close();
+
+        assertTrue(new File(directoryPath + "/sync.3.log").exists());
     }
 
     @Test
