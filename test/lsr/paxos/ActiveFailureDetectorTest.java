@@ -111,11 +111,12 @@ public class ActiveFailureDetectorTest {
     public void shouldMeasureRttWhenLeaderReceivesAliveReply() throws Exception {
         long heartbeatId = 42L;
         long sentTs = ActiveFailureDetector.getTime() - 30;
+        int followerId = 1;
 
         Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
-                "trackHeartbeatSendTime", long.class, long.class);
+                "trackHeartbeatSendTime", int.class, long.class, long.class);
         trackHeartbeat.setAccessible(true);
-        trackHeartbeat.invoke(failureDetector, heartbeatId, sentTs);
+        trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
 
         int suggestedHeartbeatInterval = 220;
         invokeOnMessageReceived(failureDetector,
@@ -132,11 +133,12 @@ public class ActiveFailureDetectorTest {
     public void shouldIgnoreOutOfRangeHeartbeatIntervalFeedback() throws Exception {
         long heartbeatId = 100L;
         long sentTs = ActiveFailureDetector.getTime() - 30;
+        int followerId = 1;
 
         Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
-                "trackHeartbeatSendTime", long.class, long.class);
+                "trackHeartbeatSendTime", int.class, long.class, long.class);
         trackHeartbeat.setAccessible(true);
-        trackHeartbeat.invoke(failureDetector, heartbeatId, sentTs);
+        trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
 
         int originalSendTimeout = failureDetector.getSendTimeout();
         invokeOnMessageReceived(failureDetector,
@@ -207,6 +209,19 @@ public class ActiveFailureDetectorTest {
         assertEquals(4, failureDetector.getLastSuggestedHeartbeatInterval());
     }
 
+    @Test
+    public void shouldEmbedLastRttWhenBuildingAliveForFollower() throws Exception {
+        setFailureDetectorView(failureDetector, 1);
+        setLastRttForFollower(failureDetector, 2, 55L);
+
+        Method createAlive = ActiveFailureDetector.class.getDeclaredMethod(
+                "createAliveForFollower", int.class, int.class, long.class, int.class);
+        createAlive.setAccessible(true);
+        Alive alive = (Alive) createAlive.invoke(failureDetector, 2, 10, 7L, 1);
+
+        assertEquals(55L, alive.getRtt());
+    }
+
     private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)
             throws Exception {
         Field innerListenerField = ActiveFailureDetector.class.getDeclaredField("innerListener");
@@ -228,6 +243,16 @@ public class ActiveFailureDetectorTest {
         listenerField.setAccessible(true);
         Storage.ViewChangeListener listener = (Storage.ViewChangeListener) listenerField.get(detector);
         listener.viewChanged(newView, newView % 3);
+    }
+
+    private static void setLastRttForFollower(ActiveFailureDetector detector, int followerId,
+                                              long rtt) throws Exception {
+        Field mapField = ActiveFailureDetector.class.getDeclaredField("lastRttByFollower");
+        mapField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Map<Integer, Long> map =
+                (java.util.Map<Integer, Long>) mapField.get(detector);
+        map.put(followerId, rtt);
     }
 
     private static void initializeProcessDescriptorWithDynatune(int numReplicas, int localId,
