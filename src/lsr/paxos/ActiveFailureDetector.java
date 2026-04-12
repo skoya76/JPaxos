@@ -685,7 +685,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             double logTerm = Math.log(1.0 - targetProbability) / Math.log(packetLossRate);
             ceilLogTerm = Math.ceil(logTerm);
         }
-        double interval = Math.floor(et / ceilLogTerm);
+        double interval = Math.floor(et / (ceilLogTerm + 1.0));
         return clampToPositiveIntCeil(interval);
     }
 

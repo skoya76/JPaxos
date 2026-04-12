@@ -220,9 +220,9 @@ public class ActiveFailureDetectorTest {
 
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
         assertEquals(14, failureDetector.getSuspectTimeout());
-        assertEquals(14, reply.getHeartbeatInterval());
+        assertEquals(7, reply.getHeartbeatInterval());
         assertEquals(14, failureDetector.getLastComputedEt());
-        assertEquals(14, failureDetector.getLastSuggestedHeartbeatInterval());
+        assertEquals(7, failureDetector.getLastSuggestedHeartbeatInterval());
     }
 
     @Test
