@@ -124,6 +124,42 @@ public class ActiveFailureDetectorTest {
         assertEquals(originalSendTimeout, failureDetector.getSendTimeout());
     }
 
+    @Test
+    public void shouldTrackFollowerObservationWindowsAndResetOnViewChange() throws Exception {
+        int view = 1;
+        int leader = view % 3;
+        int maxWindowSize = lsr.common.ProcessDescriptor.processDescriptor.dynatuneMaxListSize;
+
+        setFailureDetectorView(failureDetector, view);
+        for (int i = 0; i < maxWindowSize + 5; i++) {
+            invokeOnMessageReceived(failureDetector,
+                    new Alive(view, 10, i, 30 + i, 100), leader);
+        }
+
+        assertEquals(maxWindowSize, failureDetector.getObservedOneWayDelayCount());
+        assertEquals(maxWindowSize, failureDetector.getObservedHeartbeatIdCount());
+        assertEquals((30 + maxWindowSize + 4) / 2, failureDetector.getLastObservedOneWayDelay());
+
+        invokeViewChanged(failureDetector, view + 1);
+        assertEquals(0, failureDetector.getObservedOneWayDelayCount());
+        assertEquals(0, failureDetector.getObservedHeartbeatIdCount());
+    }
+
+    @Test
+    public void shouldIgnoreStaleAliveFromSameLeaderId() throws Exception {
+        int view = 1;
+        int staleViewWithSameLeaderId = view + 3;
+        int leader = view % 3;
+
+        setFailureDetectorView(failureDetector, view);
+        invokeOnMessageReceived(failureDetector,
+                new Alive(staleViewWithSameLeaderId, 10, 1, 50, 100), leader);
+
+        assertEquals(0, network.unicastCount);
+        assertEquals(0, failureDetector.getObservedOneWayDelayCount());
+        assertEquals(0, failureDetector.getObservedHeartbeatIdCount());
+    }
+
     private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)
             throws Exception {
         Field innerListenerField = ActiveFailureDetector.class.getDeclaredField("innerListener");
@@ -137,6 +173,14 @@ public class ActiveFailureDetectorTest {
         Field viewField = ActiveFailureDetector.class.getDeclaredField("view");
         viewField.setAccessible(true);
         viewField.setInt(detector, view);
+    }
+
+    private static void invokeViewChanged(ActiveFailureDetector detector, int newView)
+            throws Exception {
+        Field listenerField = ActiveFailureDetector.class.getDeclaredField("viewCahngeListener");
+        listenerField.setAccessible(true);
+        Storage.ViewChangeListener listener = (Storage.ViewChangeListener) listenerField.get(detector);
+        listener.viewChanged(newView, newView % 3);
     }
 
     private static class StubNetwork extends Network {

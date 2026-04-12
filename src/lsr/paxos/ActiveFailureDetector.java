@@ -2,6 +2,7 @@ package lsr.paxos;
 
 import static lsr.common.ProcessDescriptor.processDescriptor;
 
+import java.util.ArrayDeque;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Map;
@@ -54,6 +55,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private final Map<Integer, Long> lastOneWayDelayByFollower = new HashMap<Integer, Long>();
     private long oldestTrackedHeartbeatId;
     private static final int MAX_TRACKED_HEARTBEATS = 4096;
+    /** Follower role: observed one-way delay samples from leader heartbeats. */
+    private final ArrayDeque<Long> observedOneWayDelays = new ArrayDeque<Long>();
+    /** Follower role: observed heartbeat ids for loss estimation. */
+    private final ArrayDeque<Long> observedHeartbeatIds = new ArrayDeque<Long>();
 
     private final FailureDetectorListener fdListener;
 
@@ -133,6 +138,25 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
     }
 
+    public int getObservedOneWayDelayCount() {
+        synchronized (this) {
+            return observedOneWayDelays.size();
+        }
+    }
+
+    public int getObservedHeartbeatIdCount() {
+        synchronized (this) {
+            return observedHeartbeatIds.size();
+        }
+    }
+
+    public long getLastObservedOneWayDelay() {
+        synchronized (this) {
+            Long last = observedOneWayDelays.peekLast();
+            return last == null ? -1 : last.longValue();
+        }
+    }
+
     /**
      * Starts failure detector.
      */
@@ -170,6 +194,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 logger.debug("FD has been informed about view {}", newView);
                 view = newView;
                 lastHeartbeatRcvdTS = getTime();
+                resetFollowerObservations();
                 ActiveFailureDetector.this.notifyAll();
             }
         }
@@ -282,9 +307,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             // Use the message as heartbeat if the local process is
             // a follower and the sender is the leader of the current view
             if (sender == processDescriptor.getLeaderOfView(view)) {
-                lastHeartbeatRcvdTS = getTime();
                 if (message.getType() == MessageType.Alive) {
                     Alive alive = (Alive) message;
+                    if (alive.getView() != view) {
+                        return;
+                    }
+                    lastHeartbeatRcvdTS = getTime();
+                    observeFollowerHeartbeat(alive);
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = suspectTimeout / 2;
                         network.sendMessage(
@@ -292,6 +321,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                                         calculatedHeartbeatInterval),
                                 sender);
                     }
+                } else {
+                    lastHeartbeatRcvdTS = getTime();
                 }
             }
         }
@@ -372,6 +403,30 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         sendTimeout, newSendTimeout, sender);
                 setSendTimeout(newSendTimeout);
             }
+        }
+    }
+
+    private void observeFollowerHeartbeat(Alive alive) {
+        synchronized (this) {
+            if (alive.getRtt() >= 0) {
+                observedOneWayDelays.addLast(alive.getRtt() / 2);
+                trimWindow(observedOneWayDelays);
+            }
+            if (alive.getHeartbeatId() >= 0) {
+                observedHeartbeatIds.addLast(alive.getHeartbeatId());
+                trimWindow(observedHeartbeatIds);
+            }
+        }
+    }
+
+    private void resetFollowerObservations() {
+        observedOneWayDelays.clear();
+        observedHeartbeatIds.clear();
+    }
+
+    private static <T> void trimWindow(ArrayDeque<T> window) {
+        while (window.size() > processDescriptor.dynatuneMaxListSize) {
+            window.removeFirst();
         }
     }
 
