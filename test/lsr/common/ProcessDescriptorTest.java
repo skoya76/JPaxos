@@ -53,4 +53,21 @@ public class ProcessDescriptorTest {
         assertEquals(ProcessDescriptor.DEFAULT_DYNATUNE_MAX_LIST_SIZE,
                 ProcessDescriptor.processDescriptor.dynatuneMaxListSize);
     }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectNonPositiveFdSuspectTimeoutInConfiguration() throws IOException {
+        Properties properties = new Properties();
+        properties.put("process.0", "localhost:2000:3000");
+        properties.put("process.1", "localhost:2001:3001");
+        properties.put("process.2", "localhost:2002:3002");
+        properties.put(ProcessDescriptor.FD_SUSPECT_TO, "0");
+
+        File tempFile = File.createTempFile("paxos", "");
+        FileOutputStream outputStream = new FileOutputStream(tempFile);
+        properties.store(outputStream, "");
+        outputStream.close();
+
+        Configuration configuration = new Configuration(tempFile.getAbsolutePath());
+        ProcessDescriptor.initialize(configuration, 0);
+    }
 }

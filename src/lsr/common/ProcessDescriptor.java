@@ -388,6 +388,14 @@ public final class ProcessDescriptor {
         this.dynatuneMaxListSize = config.getIntProperty(
                 DYNATUNE_MAX_LIST_SIZE, DEFAULT_DYNATUNE_MAX_LIST_SIZE);
 
+        if (fdSuspectTimeout <= 0) {
+            throw new IllegalArgumentException(
+                    FD_SUSPECT_TO + " must be positive.");
+        }
+        if (fdSendTimeout <= 0) {
+            throw new IllegalArgumentException(
+                    FD_SEND_TO + " must be positive.");
+        }
         if (dynatuneSafetyFactor < 0) {
             throw new IllegalArgumentException(
                     DYNATUNE_SAFETY_FACTOR + " must be non-negative.");
