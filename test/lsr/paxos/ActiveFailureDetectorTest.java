@@ -88,11 +88,11 @@ public class ActiveFailureDetectorTest {
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
         assertEquals(view, reply.getView());
         assertEquals(heartbeatId, reply.getHeartbeatId());
-        assertEquals(failureDetector.getSuspectTimeout() / 2, reply.getHeartbeatInterval());
+        assertEquals(-1, reply.getHeartbeatInterval());
     }
 
     @Test
-    public void shouldClampFallbackHeartbeatIntervalToPositive() throws Exception {
+    public void shouldKeepFallbackHeartbeatIntervalUnsetBeforeTuning() throws Exception {
         int view = 1;
         int leader = view % 3;
         int logNextId = 10;
@@ -104,7 +104,7 @@ public class ActiveFailureDetectorTest {
         invokeOnMessageReceived(failureDetector, new Alive(view, logNextId, heartbeatId), leader);
 
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
-        assertEquals(1, reply.getHeartbeatInterval());
+        assertEquals(-1, reply.getHeartbeatInterval());
     }
 
     @Test
@@ -223,6 +223,29 @@ public class ActiveFailureDetectorTest {
         assertEquals(7, reply.getHeartbeatInterval());
         assertEquals(14, failureDetector.getLastComputedEt());
         assertEquals(7, failureDetector.getLastSuggestedHeartbeatInterval());
+    }
+
+    @Test
+    public void shouldUseSampleStdDevForEtComputation() throws Exception {
+        initializeProcessDescriptorWithDynatune(3, 0, true, 1.0, 0.5, 2, 10);
+        Storage storage = new InMemoryStorage();
+        network = new StubNetwork();
+        failureDetector = new ActiveFailureDetector(new FailureDetector.FailureDetectorListener() {
+            @Override
+            public void suspect(int view) {
+            }
+        }, network, storage);
+
+        int view = 1;
+        int leader = view % 3;
+        setFailureDetectorView(failureDetector, view);
+
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 1, 10, 100), leader);
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 2, 11, 100), leader);
+
+        // mean=10.5, sample stddev=sqrt(0.5)=0.707..., Et=11.207... -> ceil=12
+        assertEquals(12, failureDetector.getSuspectTimeout());
+        assertEquals(12, failureDetector.getLastComputedEt());
     }
 
     @Test
