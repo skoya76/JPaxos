@@ -193,7 +193,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     if (processDescriptor.isLocalProcessLeader(view)) {
                         // Send
                         long heartbeatId = nextHeartbeatId++;
-                        Alive alive = new Alive(view, storage.getLog().getNextId(), heartbeatId);
+                        long rttToEmbed = -1;
+                        long heartbeatIntervalToEmbed = sendTimeout;
+                        Alive alive = new Alive(view, storage.getLog().getNextId(),
+                                heartbeatId, rttToEmbed, heartbeatIntervalToEmbed);
                         trackHeartbeatSendTime(heartbeatId, now);
                         network.sendToOthers(alive);
                         lastHeartbeatSentTS = now;
@@ -283,8 +286,11 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 if (message.getType() == MessageType.Alive) {
                     Alive alive = (Alive) message;
                     if (alive.getHeartbeatId() >= 0) {
+                        long calculatedHeartbeatInterval = suspectTimeout / 2;
                         network.sendMessage(
-                                new AliveReply(alive.getView(), alive.getHeartbeatId()), sender);
+                                new AliveReply(alive.getView(), alive.getHeartbeatId(),
+                                        calculatedHeartbeatInterval),
+                                sender);
                     }
                 }
             }
@@ -351,6 +357,21 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             }
             lastRttByFollower.put(sender, rtt);
             lastOneWayDelayByFollower.put(sender, rtt / 2);
+
+            long heartbeatInterval = reply.getHeartbeatInterval();
+            if (heartbeatInterval <= 0 || heartbeatInterval > Integer.MAX_VALUE) {
+                logger.warn("Ignoring invalid heartbeat interval {} from replica {}",
+                        heartbeatInterval, sender);
+                return;
+            }
+
+            int newSendTimeout = (int) heartbeatInterval;
+            if (newSendTimeout != sendTimeout) {
+                logger.debug(
+                        "Adjusting sendTimeout from {} to {} based on feedback from replica {}",
+                        sendTimeout, newSendTimeout, sender);
+                setSendTimeout(newSendTimeout);
+            }
         }
     }
 
