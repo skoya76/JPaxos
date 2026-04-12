@@ -5,9 +5,27 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import org.junit.Before;
 import org.junit.Test;
 
+import lsr.common.Configuration;
+import lsr.common.PID;
+import lsr.common.ProcessDescriptor;
+
 public class SynchronousViewStorageTest {
+    @Before
+    public void setUp() {
+        List<PID> processes = new ArrayList<PID>();
+        processes.add(mock(PID.class));
+        processes.add(mock(PID.class));
+        processes.add(mock(PID.class));
+        Configuration configuration = new Configuration(processes);
+        ProcessDescriptor.initialize(configuration, 0);
+    }
+
     @Test
     public void shouldReadViewAfterCreation() {
         SingleNumberWriter writer = mock(SingleNumberWriter.class);
