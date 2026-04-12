@@ -5,8 +5,9 @@ import static lsr.common.ProcessDescriptor.processDescriptor;
 import java.util.ArrayDeque;
 import java.util.BitSet;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.NavigableSet;
+import java.util.TreeSet;
 
 import lsr.paxos.messages.Alive;
 import lsr.paxos.messages.AliveReply;
@@ -50,13 +51,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private volatile long lastHeartbeatSentTS;
     /** Leader role: monotonically increasing heartbeat id */
     private long nextHeartbeatId;
-    /**
-     * Leader role: per-follower send timestamp maps, keyed by heartbeatId.
-     * Each inner map is capacity-capped so total tracked entries remain
-     * bounded across the cluster.
-     */
-    private final Map<Integer, Map<Long, Long>> heartbeatSendTsByFollower =
-            new HashMap<Integer, Map<Long, Long>>();
     /** Leader role: last RTT observed from each follower */
     private final Map<Integer, Long> lastRttByFollower = new HashMap<Integer, Long>();
     /** Leader role: last one-way delay estimate (RTT/2) for each follower */
@@ -65,13 +59,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private final Map<Integer, Integer> perFollowerSendTimeouts = new HashMap<Integer, Integer>();
     /** Leader role: next scheduled heartbeat send time per follower. */
     private final Map<Integer, Long> perFollowerNextSendTs = new HashMap<Integer, Long>();
-    private static final int MAX_TRACKED_HEARTBEATS = 4096;
     /** Follower role: observed RTT samples from leader heartbeats. */
     private final ArrayDeque<Long> observedRtts = new ArrayDeque<Long>();
     /** Follower role: observed heartbeat ids for loss estimation. */
-    private final ArrayDeque<Long> observedHeartbeatIds = new ArrayDeque<Long>();
-    /** Follower role: latest heartbeat id observed (monotonic filter). */
-    private long lastObservedHeartbeatId = -1;
+    private final NavigableSet<Long> observedHeartbeatIds = new TreeSet<Long>();
     /** Follower role: latest computed E_t (suspicion timeout) in milliseconds. */
     private long lastComputedEt = -1;
     /** Follower role: latest suggested heartbeat interval for leader. */
@@ -281,7 +272,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         // buildPerFollowerAlive guarantees an entry for every
                         // replicaId != localId, so alive is never null here.
                         long sendTs = getTime();
-                        trackHeartbeatSendTime(replicaId, heartbeatId, sendTs);
+                        alive.setSentTime(sendTs);
                         network.sendMessage(alive, replicaId);
                         synchronized (this) {
                             markFollowerSentLocked(replicaId,
@@ -366,10 +357,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     observeFollowerHeartbeat(alive);
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
-                        network.sendMessage(
-                                new AliveReply(alive.getView(), alive.getHeartbeatId(),
-                                        calculatedHeartbeatInterval),
-                                sender);
+                        AliveReply reply = new AliveReply(alive.getView(), alive.getHeartbeatId(),
+                                calculatedHeartbeatInterval);
+                        reply.setSentTime(alive.getSentTime());
+                        network.sendMessage(reply, sender);
                     }
                 } else {
                     lastHeartbeatRcvdTS = getTime();
@@ -416,38 +407,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
     }
 
-    private void trackHeartbeatSendTime(int followerId, long heartbeatId, long sentTs) {
-        synchronized (this) {
-            Map<Long, Long> perFollower = heartbeatSendTsByFollower.get(followerId);
-            if (perFollower == null) {
-                // Use a capacity-capped LinkedHashMap (insertion-order / FIFO eviction)
-                // so the oldest-sent entry is evicted first.  accessOrder=false means
-                // insertion order is preserved; the eldest entry is always the first
-                // inserted, which corresponds to the oldest heartbeat id.
-                final int cap = getPerFollowerSendTsCap();
-                perFollower = new LinkedHashMap<Long, Long>(cap * 2, 0.75f, false) {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<Long, Long> eldest) {
-                        return size() > cap;
-                    }
-                };
-                heartbeatSendTsByFollower.put(followerId, perFollower);
-            }
-            perFollower.put(heartbeatId, sentTs);
-        }
-    }
-
     private void handleAliveReply(AliveReply reply, int sender) {
         synchronized (this) {
             if (reply.getView() != view) {
                 return;
             }
-            Long sentTs = findHeartbeatSendTime(sender, reply.getHeartbeatId());
-            if (sentTs == null) {
-                return;
-            }
+            long sentTs = reply.getSentTime();
             long now = getTime();
-            long rtt = now - sentTs.longValue();
+            long rtt = now - sentTs;
             if (rtt < 0) {
                 return;
             }
@@ -477,31 +444,19 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 trimWindow(observedRtts);
             }
             if (alive.getHeartbeatId() >= 0) {
-                long heartbeatId = alive.getHeartbeatId();
-                if (heartbeatId > lastObservedHeartbeatId) {
-                    lastObservedHeartbeatId = heartbeatId;
-                    observedHeartbeatIds.addLast(heartbeatId);
-                    trimWindow(observedHeartbeatIds);
+                observedHeartbeatIds.add(alive.getHeartbeatId());
+                while (observedHeartbeatIds.size() > processDescriptor.dynatuneMaxListSize) {
+                    observedHeartbeatIds.pollFirst();
                 }
             }
             updateFollowerTuning();
         }
     }
 
-    private Long findHeartbeatSendTime(int followerId, long heartbeatId) {
-        assert Thread.holdsLock(this);
-        Map<Long, Long> perFollower = heartbeatSendTsByFollower.get(followerId);
-        if (perFollower == null) {
-            return null;
-        }
-        return perFollower.get(heartbeatId);
-    }
-
     private void resetLeaderObservations() {
         assert Thread.holdsLock(this);
         lastRttByFollower.clear();
         lastOneWayDelayByFollower.clear();
-        heartbeatSendTsByFollower.clear();
         perFollowerSendTimeouts.clear();
         perFollowerNextSendTs.clear();
         // Reset heartbeat id counter so newly elected leader starts fresh.
@@ -531,7 +486,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         observedHeartbeatIds.clear();
         lastComputedEt = -1;
         lastSuggestedHeartbeatInterval = -1;
-        lastObservedHeartbeatId = -1;
     }
 
     private static <T> void trimWindow(ArrayDeque<T> window) {
@@ -636,11 +590,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
         return nextSend;
     }
-    private int getPerFollowerSendTsCap() {
-        int followers = Math.max(1, processDescriptor.numReplicas - 1);
-        return Math.max(1, MAX_TRACKED_HEARTBEATS / followers);
-    }
-
     private long getSuggestedHeartbeatIntervalForReply() {
         synchronized (this) {
             if (lastSuggestedHeartbeatInterval > 0) {
@@ -697,12 +646,12 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         return Math.sqrt(variance);
     }
 
-    private static double computePacketLossRate(ArrayDeque<Long> heartbeatIds) {
+    private static double computePacketLossRate(NavigableSet<Long> heartbeatIds) {
         if (heartbeatIds.size() < 2) {
             return 0.0;
         }
-        long first = heartbeatIds.peekFirst().longValue();
-        long last = heartbeatIds.peekLast().longValue();
+        long first = heartbeatIds.first().longValue();
+        long last = heartbeatIds.last().longValue();
         long expected = calculatePacketCount(first, last);
         long received = heartbeatIds.size();
         if (expected <= 0) {
