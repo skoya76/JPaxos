@@ -244,6 +244,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 int logNextId = -1;
                 int viewSnapshot = -1;
                 Map<Integer, Alive> perFollowerAlive = null;
+                Map<Integer, Long> dueFollowers = null;
                 synchronized (this) {
                     viewSnapshot = view;
                     localProcessLeader = processDescriptor.isLocalProcessLeader(viewSnapshot);
@@ -252,14 +253,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         logNextId = storage.getLog().getNextId();
                         perFollowerAlive = buildPerFollowerAlive(logNextId, heartbeatId,
                                 viewSnapshot);
+                        dueFollowers = scheduleDueFollowersLocked(getTime());
                     }
                 }
 
                 if (localProcessLeader) {
-                    for (int replicaId = 0; replicaId < processDescriptor.numReplicas; replicaId++) {
-                        if (replicaId == processDescriptor.localId) {
-                            continue;
-                        }
+                    for (Map.Entry<Integer, Long> entry : dueFollowers.entrySet()) {
+                        int replicaId = entry.getKey();
                         // Abort the send loop if the view has changed since the snapshot
                         // was taken (i.e. leadership was lost while sending per-follower
                         // unicasts outside the synchronized block). This prevents emitting
@@ -288,14 +288,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     now = lastHeartbeatSentTS;
 
                     synchronized (this) {
-                        long nextSend = lastHeartbeatSentTS + sendTimeout;
+                        long nextSend = getNextLeaderSendTimeLocked(lastHeartbeatSentTS);
                         while (now < nextSend && processDescriptor.isLocalProcessLeader(view)) {
                             if (logger.isTraceEnabled()) {
                                 logger.trace("Sending next Alive in {} ms", nextSend - now);
                             }
                             wait(nextSend - now);
                             now = getTime();
-                            nextSend = lastHeartbeatSentTS + sendTimeout;
+                            nextSend = getNextLeaderSendTimeLocked(lastHeartbeatSentTS);
                         }
                     }
                 } else {
@@ -455,11 +455,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             }
 
             int newSendTimeout = (int) heartbeatInterval;
-            if (newSendTimeout != sendTimeout) {
-                logger.debug(
-                        "Adjusting sendTimeout from {} to {} based on feedback from replica {}",
-                        sendTimeout, newSendTimeout, sender);
-                setSendTimeout(newSendTimeout);
+            Integer previousSendTimeout = perFollowerSendTimeouts.put(sender, newSendTimeout);
+            perFollowerNextSendTs.put(sender, now + newSendTimeout);
+            if (previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
+                notifyAll();
             }
         }
     }
