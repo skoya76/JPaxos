@@ -1,0 +1,61 @@
+services:
+  replica0:
+    build:
+      context: ../..
+      dockerfile: docker/e2e/Dockerfile
+    image: jpaxos-e2e:latest
+    pull_policy: never
+    container_name: jpaxos-replica0
+    hostname: replica0
+    cap_add:
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
+    environment:
+      NETEM_DELAY_MS: ${NETEM_DELAY_MS:-50}
+    command: ["/opt/jpaxos/docker/e2e/jpaxos.sh", "replica", "0"]
+
+  replica1:
+    image: jpaxos-e2e:latest
+    pull_policy: never
+    container_name: jpaxos-replica1
+    hostname: replica1
+    cap_add:
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
+    environment:
+      NETEM_DELAY_MS: ${NETEM_DELAY_MS:-50}
+    command: ["/opt/jpaxos/docker/e2e/jpaxos.sh", "replica", "1"]
+    depends_on:
+      - replica0
+
+  replica2:
+    image: jpaxos-e2e:latest
+    pull_policy: never
+    container_name: jpaxos-replica2
+    hostname: replica2
+    cap_add:
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
+    environment:
+      NETEM_DELAY_MS: ${NETEM_DELAY_MS:-50}
+    command: ["/opt/jpaxos/docker/e2e/jpaxos.sh", "replica", "2"]
+    depends_on:
+      - replica0
+
+  client:
+    image: jpaxos-e2e:latest
+    pull_policy: never
+    container_name: jpaxos-client
+    hostname: client
+    cap_add:
+      - NET_ADMIN
+    environment:
+      NETEM_DELAY_MS: ${NETEM_DELAY_MS:-50}
+    command: ["sleep", "infinity"]
+    depends_on:
+      - replica0
+      - replica1
+      - replica2
