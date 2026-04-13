@@ -414,6 +414,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             Integer previousSendTimeout = perFollowerSendTimeouts.put(sender, newSendTimeout);
             perFollowerNextSendTs.put(sender, now + newSendTimeout);
             if (previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
+                logger.info("Dynatune applied per-follower heartbeat interval: replica={} intervalMs={}",
+                        sender, newSendTimeout);
                 notifyAll();
             }
         }
@@ -575,16 +577,25 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         double stddev = computeStdDev(observedRtts, mean);
         double et = mean + processDescriptor.dynatuneSafetyFactor * stddev;
         int newSuspectTimeout = clampToPositiveIntCeil(et);
-        if (newSuspectTimeout > 0 && newSuspectTimeout != suspectTimeout) {
+        int oldSuspectTimeout = suspectTimeout;
+        if (newSuspectTimeout > 0 && newSuspectTimeout != oldSuspectTimeout) {
             setSuspectTimeout(newSuspectTimeout);
+            logger.info("Dynatune updated E_t(suspectTimeout): oldMs={} newMs={} samples={}",
+                    oldSuspectTimeout, newSuspectTimeout, observedRtts.size());
         }
         lastComputedEt = newSuspectTimeout;
 
         double packetLossRate = computePacketLossRate(observedHeartbeatIds);
         int suggestedInterval = computeSuggestedHeartbeatInterval(newSuspectTimeout, packetLossRate,
                 processDescriptor.dynatuneHeartbeatProbability);
+        int oldSuggestedInterval = lastSuggestedHeartbeatInterval;
         if (suggestedInterval > 0) {
             lastSuggestedHeartbeatInterval = suggestedInterval;
+            if (suggestedInterval != oldSuggestedInterval) {
+                logger.info(
+                        "Dynatune updated suggested heartbeat interval: oldMs={} newMs={} lossRate={} etMs={}",
+                        oldSuggestedInterval, suggestedInterval, packetLossRate, newSuspectTimeout);
+            }
         }
     }
 
