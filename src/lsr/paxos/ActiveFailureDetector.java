@@ -49,8 +49,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private volatile long lastHeartbeatRcvdTS;
     /** Leader role: time when the last message or heartbeat was sent to all */
     private volatile long lastHeartbeatSentTS;
-    /** Leader role: monotonically increasing heartbeat id */
-    private long nextHeartbeatId;
+    /** Leader role: monotonically increasing heartbeat id per follower */
+    private final Map<Integer, Long> nextHeartbeatIdByFollower = new HashMap<Integer, Long>();
     /** Leader role: last RTT observed from each follower */
     private final Map<Integer, Long> lastRttByFollower = new HashMap<Integer, Long>();
     /** Leader role: per-follower heartbeat interval overrides (in milliseconds). */
@@ -230,19 +230,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             while (true) {
                 long now = getTime();
                 boolean localProcessLeader;
-                long heartbeatId = -1;
                 int logNextId = -1;
                 int viewSnapshot = -1;
-                Map<Integer, Alive> perFollowerAlive = null;
                 ArrayDeque<Integer> dueFollowers = null;
                 synchronized (this) {
                     viewSnapshot = view;
                     localProcessLeader = processDescriptor.isLocalProcessLeader(viewSnapshot);
                     if (localProcessLeader) {
-                        heartbeatId = nextHeartbeatId++;
                         logNextId = storage.getLog().getNextId();
-                        perFollowerAlive = buildPerFollowerAlive(logNextId, heartbeatId,
-                                viewSnapshot);
                         dueFollowers = scheduleDueFollowersLocked(getTime());
                     }
                 }
@@ -256,7 +251,12 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                                     viewSnapshot, view);
                             break;
                         }
-                        Alive alive = perFollowerAlive.get(replicaId);
+                        Alive alive;
+                        synchronized (this) {
+                            long heartbeatId = nextHeartbeatIdForFollowerLocked(replicaId);
+                            alive = createAliveForFollowerLocked(replicaId, logNextId, heartbeatId,
+                                    viewSnapshot);
+                        }
                         long sendTs = getTime();
                         alive.setHeartbeatTimestamp(sendTs);
                         alive.setSentTime(sendTs);
@@ -337,7 +337,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         return;
                     }
                     lastHeartbeatRcvdTS = getTime();
-                    observeFollowerHeartbeat(alive);
+                    observeFollowerHeartbeat(alive, sender);
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
                         AliveReply reply = new AliveReply(alive.getView(), alive.getHeartbeatId(),
@@ -424,7 +424,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
     }
 
-    private void observeFollowerHeartbeat(Alive alive) {
+    private void observeFollowerHeartbeat(Alive alive, int leaderReplicaId) {
         synchronized (this) {
             if (alive.getRtt() >= 0) {
                 observedRtts.addLast(alive.getRtt());
@@ -444,7 +444,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         lastRttByFollower.clear();
         perFollowerSendTimeouts.clear();
         perFollowerNextSendTs.clear();
-        nextHeartbeatId = 0;
+        nextHeartbeatIdByFollower.clear();
+    }
+
+    private long nextHeartbeatIdForFollowerLocked(int followerId) {
+        Long nextHeartbeatId = nextHeartbeatIdByFollower.get(followerId);
+        long heartbeatId = nextHeartbeatId == null ? 0L : nextHeartbeatId.longValue();
+        nextHeartbeatIdByFollower.put(followerId, heartbeatId + 1L);
+        return heartbeatId;
     }
 
     private Map<Integer, Alive> buildPerFollowerAlive(int logNextId, long heartbeatId,
@@ -483,7 +490,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     private Alive createAliveForFollowerLocked(int followerId, int logNextId, long heartbeatId,
                                                int viewSnapshot) {
-        long rttToEmbed = -1;
+        long rttToEmbed = 0;
         Long lastRtt = lastRttByFollower.get(followerId);
         if (lastRtt != null && lastRtt.longValue() >= 0) {
             rttToEmbed = lastRtt.longValue();
