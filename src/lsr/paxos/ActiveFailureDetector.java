@@ -260,6 +260,16 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         long sendTs = getTime();
                         alive.setHeartbeatTimestamp(sendTs);
                         alive.setSentTime(sendTs);
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("DynatuneLeaderHeartbeatSent view={} toReplica={} " +
+                                         "payload=<rtt={},ts={},id={},h={}>",
+                                    viewSnapshot,
+                                    replicaId,
+                                    alive.getRtt(),
+                                    alive.getHeartbeatTimestamp(),
+                                    alive.getHeartbeatId(),
+                                    alive.getHeartbeatInterval());
+                        }
                         network.sendMessage(alive, replicaId);
                         synchronized (this) {
                             markFollowerSentLocked(replicaId, sendTs);
@@ -340,9 +350,27 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     observeFollowerHeartbeat(alive, sender);
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("DynatuneFollowerAliveReplyDecision view={} " +
+                                         "leaderReplica={} heartbeatId={} " +
+                                         "replyHeartbeatInterval={}",
+                                    view,
+                                    sender,
+                                    alive.getHeartbeatId(),
+                                    calculatedHeartbeatInterval);
+                        }
                         AliveReply reply = new AliveReply(alive.getView(), alive.getHeartbeatId(),
                                 alive.getHeartbeatTimestamp(),
                                 calculatedHeartbeatInterval);
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("DynatuneFollowerAliveReplySent view={} toReplica={} " +
+                                         "payload=<ts={},id={},h={}>",
+                                    alive.getView(),
+                                    sender,
+                                    reply.getHeartbeatTimestamp(),
+                                    reply.getHeartbeatId(),
+                                    reply.getHeartbeatInterval());
+                        }
                         network.sendMessage(reply, sender);
                     }
                 } else {
@@ -395,6 +423,15 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             if (reply.getView() != view) {
                 return;
             }
+            if (logger.isDebugEnabled()) {
+                logger.debug("DynatuneLeaderAliveReplyReceived view={} fromReplica={} " +
+                             "payload=<ts={},id={},h={}>",
+                        view,
+                        sender,
+                        reply.getHeartbeatTimestamp(),
+                        reply.getHeartbeatId(),
+                        reply.getHeartbeatInterval());
+            }
             long sentTs = reply.getHeartbeatTimestamp();
             if (sentTs < 0) {
                 return;
@@ -403,6 +440,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             long rtt = now - sentTs;
             if (rtt < 0) {
                 return;
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("DynatuneLeaderMeasuredRtt view={} fromReplica={} " +
+                             "heartbeatId={} measuredRttMs={}",
+                        view,
+                        sender,
+                        reply.getHeartbeatId(),
+                        rtt);
             }
             lastRttByFollower.put(sender, rtt);
 
@@ -417,8 +462,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             Integer previousSendTimeout = perFollowerSendTimeouts.put(sender, newSendTimeout);
             perFollowerNextSendTs.put(sender, now + newSendTimeout);
             if (previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
-                logger.info("Dynatune applied per-follower heartbeat interval: replica={} intervalMs={}",
-                        sender, newSendTimeout);
+                logger.info("Dynatune applied per-follower heartbeat interval: view={} replica={} " +
+                            "oldIntervalMs={} newIntervalMs={} heartbeatId={} measuredRttMs={}",
+                        view,
+                        sender,
+                        previousSendTimeout,
+                        newSendTimeout,
+                        reply.getHeartbeatId(),
+                        rtt);
                 notifyAll();
             }
         }
@@ -426,6 +477,16 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     private void observeFollowerHeartbeat(Alive alive, int leaderReplicaId) {
         synchronized (this) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("DynatuneFollowerHeartbeatReceived view={} fromReplica={} " +
+                             "payload=<rtt={},ts={},id={},h={}>",
+                        view,
+                        leaderReplicaId,
+                        alive.getRtt(),
+                        alive.getHeartbeatTimestamp(),
+                        alive.getHeartbeatId(),
+                        alive.getHeartbeatInterval());
+            }
             if (alive.getRtt() >= 0) {
                 observedRtts.addLast(alive.getRtt());
                 trimWindow(observedRtts);
@@ -435,6 +496,15 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 while (observedHeartbeatIds.size() > processDescriptor.dynatuneMaxListSize) {
                     observedHeartbeatIds.pollFirst();
                 }
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("DynatuneFollowerMetricsWindow view={} rttCount={} idCount={} " +
+                             "rttList={} idList={}",
+                        view,
+                        observedRtts.size(),
+                        observedHeartbeatIds.size(),
+                        observedRtts,
+                        observedHeartbeatIds);
             }
             updateFollowerTuning();
         }
@@ -582,7 +652,26 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         int minListSize = processDescriptor.dynatuneMinListSize;
         if (observedRtts.size() < minListSize ||
             observedHeartbeatIds.size() < minListSize) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("DynatuneFollowerWarmupPending view={} rttCount={} idCount={} " +
+                             "minRequired={} currentEtMs={} currentSuggestedH={}",
+                        view,
+                        observedRtts.size(),
+                        observedHeartbeatIds.size(),
+                        minListSize,
+                        suspectTimeout,
+                        -1);
+            }
             return;
+        }
+        if (!followerTuningStarted) {
+            followerTuningStarted = true;
+            logger.info("Dynatune follower tuning started: view={} rttCount={} idCount={} " +
+                        "minRequired={}",
+                    view,
+                    observedRtts.size(),
+                    observedHeartbeatIds.size(),
+                    minListSize);
         }
         double mean = computeMean(observedRtts);
         double stddev = computeStdDev(observedRtts, mean);
@@ -608,6 +697,20 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         oldSuggestedInterval, suggestedInterval, packetLossRate, newSuspectTimeout);
             }
         }
+        if (logger.isDebugEnabled()) {
+            logger.debug("DynatuneFollowerComputed view={} rttList={} idList={} " +
+                         "meanRttMs={} stddevMs={} etMs={} lossRate={} hMs={}",
+                    view,
+                    observedRtts,
+                    observedHeartbeatIds,
+                    mean,
+                    stddev,
+                    newSuspectTimeout,
+                    packetLossRate,
+                    suggestedInterval);
+        }
+
+        logFollowerTuningSnapshot(mean, stddev, packetLossRate, newSuspectTimeout, suggestedInterval);
     }
 
     private static double computeMean(ArrayDeque<Long> samples) {
@@ -685,6 +788,75 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             return lastId - firstId + 1;
         }
         return (Long.MAX_VALUE - firstId) + lastId + 2;
+    }
+
+    private void logFollowerTuningSnapshot(double meanRtt, double stddevRtt, double packetLossRate,
+                                           int etMs, int hMs) {
+        if (!logger.isDebugEnabled()) {
+            return;
+        }
+
+        long rttMin = findMin(observedRtts);
+        long rttMax = findMax(observedRtts);
+        Long latestRtt = observedRtts.peekLast();
+        long rttLatest = latestRtt == null ? -1 : latestRtt.longValue();
+
+        long firstHeartbeatId = observedHeartbeatIds.isEmpty() ? -1 : observedHeartbeatIds.first();
+        long lastHeartbeatId = observedHeartbeatIds.isEmpty() ? -1 : observedHeartbeatIds.last();
+        long expectedHeartbeatCount = observedHeartbeatIds.size() < 2 ? observedHeartbeatIds.size()
+                : calculatePacketCount(firstHeartbeatId, lastHeartbeatId);
+        int receivedHeartbeatCount = observedHeartbeatIds.size();
+
+        logger.debug("DynatuneMetrics view={} rttSamples={} idSamples={} rttMeanMs={} " +
+                     "rttStdDevMs={} rttMinMs={} rttMaxMs={} rttLatestMs={} " +
+                     "safetyFactor={} lossRate={} targetProb={} firstHeartbeatId={} " +
+                     "lastHeartbeatId={} expectedHeartbeatCount={} receivedHeartbeatCount={} " +
+                     "etMs={} hMs={}",
+                view,
+                observedRtts.size(),
+                observedHeartbeatIds.size(),
+                meanRtt,
+                stddevRtt,
+                rttMin,
+                rttMax,
+                rttLatest,
+                processDescriptor.dynatuneSafetyFactor,
+                packetLossRate,
+                processDescriptor.dynatuneHeartbeatProbability,
+                firstHeartbeatId,
+                lastHeartbeatId,
+                expectedHeartbeatCount,
+                receivedHeartbeatCount,
+                etMs,
+                hMs);
+    }
+
+    private static long findMin(ArrayDeque<Long> samples) {
+        if (samples.isEmpty()) {
+            return -1;
+        }
+        long min = Long.MAX_VALUE;
+        for (Long sample : samples) {
+            long value = sample.longValue();
+            if (value < min) {
+                min = value;
+            }
+        }
+        return min;
+    }
+
+    private static long findMax(ArrayDeque<Long> samples) {
+        if (samples.isEmpty()) {
+            return -1;
+        }
+        long max = Long.MIN_VALUE;
+        for (Long sample : samples) {
+            long value = sample.longValue();
+            if (value > max) {
+                max = value;
+            }
+        }
+        return max;
     }
 
     private final static Logger logger = LoggerFactory.getLogger(ActiveFailureDetector.class);
