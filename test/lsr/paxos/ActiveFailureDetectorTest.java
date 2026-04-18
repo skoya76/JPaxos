@@ -118,7 +118,7 @@ public class ActiveFailureDetectorTest {
         invokeOnMessageReceived(failureDetector, reply, 1);
 
         long rtt = failureDetector.getLastRttForReplica(1);
-        assertTrue(rtt >= 0);
+        assertTrue(rtt > 0);
         assertEquals(suggestedHeartbeatInterval,
                 failureDetector.getPerFollowerSendTimeout(followerId));
     }
@@ -200,15 +200,16 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
-    public void shouldIncludeZeroRttSampleInFollowerMetrics() throws Exception {
+    public void shouldIgnoreNonPositiveRttSamplesInFollowerMetrics() throws Exception {
         int view = 1;
         int leader = view % 3;
 
         setFailureDetectorView(failureDetector, view);
         invokeOnMessageReceived(failureDetector, new Alive(view, 10, 1, 0, 100), leader);
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 2, -1, 100), leader);
 
-        assertEquals(1, failureDetector.getObservedRttCount());
-        assertEquals(0, failureDetector.getLastObservedRtt());
+        assertEquals(0, failureDetector.getObservedRttCount());
+        assertEquals(-1, failureDetector.getLastObservedRtt());
     }
 
     @Test
@@ -274,7 +275,7 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
-    public void shouldEmbedZeroRttWhenNoRttObservedYet() throws Exception {
+    public void shouldEmbedMinusOneRttWhenNoRttObservedYet() throws Exception {
         setFailureDetectorView(failureDetector, 1);
 
         Method createAlive = ActiveFailureDetector.class.getDeclaredMethod(
@@ -282,7 +283,7 @@ public class ActiveFailureDetectorTest {
         createAlive.setAccessible(true);
         Alive alive = (Alive) createAlive.invoke(failureDetector, 2, 10, 7L, 1);
 
-        assertEquals(0L, alive.getRtt());
+        assertEquals(-1L, alive.getRtt());
     }
 
     private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)

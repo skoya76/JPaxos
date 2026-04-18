@@ -438,18 +438,24 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             }
             long now = getTime();
             long rtt = now - sentTs;
-            if (rtt < 0) {
-                return;
-            }
-            if (logger.isDebugEnabled()) {
-                logger.debug("DynatuneLeaderMeasuredRtt view={} fromReplica={} " +
+            if (rtt > 0) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("DynatuneLeaderMeasuredRtt view={} fromReplica={} " +
+                                 "heartbeatId={} measuredRttMs={}",
+                            view,
+                            sender,
+                            reply.getHeartbeatId(),
+                            rtt);
+                }
+                lastRttByFollower.put(sender, rtt);
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("DynatuneLeaderIgnoredRtt view={} fromReplica={} " +
                              "heartbeatId={} measuredRttMs={}",
                         view,
                         sender,
                         reply.getHeartbeatId(),
                         rtt);
             }
-            lastRttByFollower.put(sender, rtt);
 
             long heartbeatInterval = reply.getHeartbeatInterval();
             if (heartbeatInterval <= 0 || heartbeatInterval > Integer.MAX_VALUE) {
@@ -487,7 +493,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         alive.getHeartbeatId(),
                         alive.getHeartbeatInterval());
             }
-            if (alive.getRtt() >= 0) {
+            if (alive.getRtt() > 0) {
                 observedRtts.addLast(alive.getRtt());
                 trimWindow(observedRtts);
             }
@@ -560,9 +566,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     private Alive createAliveForFollowerLocked(int followerId, int logNextId, long heartbeatId,
                                                int viewSnapshot) {
-        long rttToEmbed = 0;
+        long rttToEmbed = -1;
         Long lastRtt = lastRttByFollower.get(followerId);
-        if (lastRtt != null && lastRtt.longValue() >= 0) {
+        if (lastRtt != null && lastRtt.longValue() > 0) {
             rttToEmbed = lastRtt.longValue();
         }
         long heartbeatIntervalToEmbed = getFollowerSendTimeoutLocked(followerId);
