@@ -65,6 +65,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private long lastComputedEt = -1;
     /** Follower role: latest suggested heartbeat interval for leader. */
     private int lastSuggestedHeartbeatInterval = -1;
+    /** Follower role: true once tuning moves from warmup to active computation. */
+    private boolean followerTuningStarted = false;
 
     private final FailureDetectorListener fdListener;
 
@@ -214,6 +216,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 logger.debug("FD has been informed about view {}", newView);
                 view = newView;
                 lastHeartbeatRcvdTS = getTime();
+                suspectTimeout = defaultSuspectTimeout;
                 resetFollowerObservations();
                 resetLeaderObservations();
                 ActiveFailureDetector.this.notifyAll();
@@ -462,6 +465,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         observedHeartbeatIds.clear();
         lastComputedEt = -1;
         lastSuggestedHeartbeatInterval = -1;
+        followerTuningStarted = false;
     }
 
     private static <T> void trimWindow(ArrayDeque<T> window) {
