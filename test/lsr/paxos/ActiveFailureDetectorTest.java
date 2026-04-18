@@ -200,6 +200,18 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldIncludeZeroRttSampleInFollowerMetrics() throws Exception {
+        int view = 1;
+        int leader = view % 3;
+
+        setFailureDetectorView(failureDetector, view);
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 1, 0, 100), leader);
+
+        assertEquals(1, failureDetector.getObservedRttCount());
+        assertEquals(0, failureDetector.getLastObservedRtt());
+    }
+
+    @Test
     public void shouldComputeEtAndHeartbeatIntervalFromObservations() throws Exception {
         initializeProcessDescriptorWithDynatune(3, 0, true, 0.0, 0.5, 3, 10);
         Storage storage = new InMemoryStorage();
@@ -259,6 +271,18 @@ public class ActiveFailureDetectorTest {
         Alive alive = (Alive) createAlive.invoke(failureDetector, 2, 10, 7L, 1);
 
         assertEquals(55L, alive.getRtt());
+    }
+
+    @Test
+    public void shouldEmbedZeroRttWhenNoRttObservedYet() throws Exception {
+        setFailureDetectorView(failureDetector, 1);
+
+        Method createAlive = ActiveFailureDetector.class.getDeclaredMethod(
+                "createAliveForFollower", int.class, int.class, long.class, int.class);
+        createAlive.setAccessible(true);
+        Alive alive = (Alive) createAlive.invoke(failureDetector, 2, 10, 7L, 1);
+
+        assertEquals(0L, alive.getRtt());
     }
 
     private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)
