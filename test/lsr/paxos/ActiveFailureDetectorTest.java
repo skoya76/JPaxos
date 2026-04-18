@@ -149,6 +149,7 @@ public class ActiveFailureDetectorTest {
         int maxWindowSize = lsr.common.ProcessDescriptor.processDescriptor.dynatuneMaxListSize;
 
         setFailureDetectorView(failureDetector, view);
+        failureDetector.setSuspectTimeout(123);
         for (int i = 0; i < maxWindowSize + 5; i++) {
             invokeOnMessageReceived(failureDetector,
                     new Alive(view, 10, i, 30 + i, 100), leader);
@@ -161,6 +162,7 @@ public class ActiveFailureDetectorTest {
         invokeViewChanged(failureDetector, view + 1);
         assertEquals(0, failureDetector.getObservedRttCount());
         assertEquals(0, failureDetector.getObservedHeartbeatIdCount());
+        assertEquals(failureDetector.getDefaultSuspectTimeout(), failureDetector.getSuspectTimeout());
     }
 
     @Test
