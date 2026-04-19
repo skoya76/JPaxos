@@ -14,7 +14,7 @@ public final class MessageFactory {
 
     /**
      * Creates a <code>Message</code> from serialized byte array.
-     * 
+     *
      * @param message - serialized byte array with message content
      * @return deserialized message
      * @throws ClassNotFoundException
@@ -29,11 +29,11 @@ public final class MessageFactory {
      * Creates a <code>Message</code> from input stream. Reads byte array and
      * creates message from it. Byte array must have been written by
      * Message::toByteArray().
-     * 
+     *
      * @param input - the input stream with serialized message inside
      * @return correct object from one of message subclasses
      * @throws IOException
-     * 
+     *
      * @throws IllegalArgumentException if a correct message could not be read
      *             from input
      */
@@ -45,11 +45,11 @@ public final class MessageFactory {
 
     /**
      * Creates new message of specified type from given stream.
-     * 
+     *
      * @param type - the type of message to create
      * @param input - the stream with serialized message
      * @return deserialized message
-     * 
+     *
      * @throws IOException if I/O error occurs
      */
     private static Message createMessage(MessageType type, DataInputStream input)
@@ -64,6 +64,12 @@ public final class MessageFactory {
                 break;
             case Alive:
                 message = new Alive(input);
+                break;
+            case PreVoteRequest:
+                message = new PreVoteRequest(input);
+                break;
+            case PreVoteReply:
+                message = new PreVoteReply(input);
                 break;
             case CatchUpQuery:
                 message = new CatchUpQuery(input);
@@ -114,6 +120,10 @@ public final class MessageFactory {
                 return new Accept(bb);
             case Alive:
                 return new Alive(bb);
+            case PreVoteRequest:
+                return new PreVoteRequest(bb);
+            case PreVoteReply:
+                return new PreVoteReply(bb);
             case CatchUpQuery:
                 return new CatchUpQuery(bb);
             case CatchUpResponse:

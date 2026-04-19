@@ -7,6 +7,8 @@ import java.util.BitSet;
 import lsr.paxos.messages.Alive;
 import lsr.paxos.messages.Message;
 import lsr.paxos.messages.MessageType;
+import lsr.paxos.messages.PreVoteReply;
+import lsr.paxos.messages.PreVoteRequest;
 import lsr.paxos.network.MessageHandler;
 import lsr.paxos.network.Network;
 import lsr.paxos.storage.Storage;
@@ -40,11 +42,19 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     /** Leader role: time when the last message or heartbeat was sent to all */
     private volatile long lastHeartbeatSentTS;
 
+    /** How long to wait for pre-vote replies before giving up (ms). */
+    private static final int PRE_VOTE_TIMEOUT_MS = 100;
+    /** Pre-vote round state (guarded by synchronized(this)). */
+    private long nextPreVoteRoundId = 0L;
+    private long activePreVoteRoundId = -1L;
+    private int activePreVoteView = -1;
+    private final BitSet preVoteGranted = new BitSet();
+
     private final FailureDetectorListener fdListener;
 
     /**
      * Initializes new instance of <code>FailureDetector</code>.
-     * 
+     *
      * @param paxos - the paxos which should be notified about suspecting leader
      * @param network - used to send and receive messages
      * @param storage - storage containing all data about paxos
@@ -87,9 +97,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     /**
      * Updates state of failure detector, due to leader change.
-     * 
+     *
      * Called whenever the leader changes.
-     * 
+     *
      * @param newLeader - process id of the new leader
      */
     protected Storage.ViewChangeListener viewCahngeListener = new Storage.ViewChangeListener() {
@@ -99,6 +109,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 logger.debug("FD has been informed about view {}", newView);
                 view = newView;
                 lastHeartbeatRcvdTS = getTime();
+                activePreVoteRoundId = -1L;
+                activePreVoteView = -1;
+                preVoteGranted.clear();
                 ActiveFailureDetector.this.notify();
             }
         }
@@ -157,19 +170,18 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                             suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
                         }
                         if (!processDescriptor.isLocalProcessLeader(view)) {
+                            if (!runPreVoteRoundLocked(view)) {
+                                // Back off after a failed pre-vote to avoid tight suspect loops.
+                                lastHeartbeatRcvdTS = getTime();
+                                continue;
+                            }
                             // Raise the suspicion. A suspect task will be
-                            // queued for execution
-                            // on the Protocol thread.
+                            // queued for execution on the Protocol thread.
                             fdListener.suspect(view);
                             // The view change is done asynchronously as seen
                             // from this thread.
                             // To avoid raising multiple suspicions, this thread
-                            // suspends until
-                            // the view change completes. When that happens, the
-                            // method viewChange()
-                            // will be called by the Protocol thread, which will
-                            // notify() this
-                            // monitor, thereby unlocking this thread.
+                            // suspends until the view change completes.
                             int oldView = view;
                             while (oldView == view) {
                                 logger.debug("FD is waiting for view change from {}", oldView);
@@ -188,14 +200,23 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     /**
      * Intersects any message sent or received, used to reset the timeouts for
      * sending and receiving ALIVE messages.
-     * 
+     *
      * These methods are called by the Network thread.
-     * 
+     *
      * @author Nuno Santos (LSR)
      */
     final class InnerMessageHandler implements MessageHandler {
 
         public void onMessageReceived(Message message, int sender) {
+            if (message.getType() == MessageType.PreVoteRequest) {
+                handlePreVoteRequest((PreVoteRequest) message, sender);
+                return;
+            }
+            if (message.getType() == MessageType.PreVoteReply) {
+                handlePreVoteReply((PreVoteReply) message, sender);
+                return;
+            }
+
             // followers only.
             if (processDescriptor.isLocalProcessLeader(view))
                 return;
@@ -228,6 +249,79 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
             // This process just sent a message to all. Reset the timeout.
             lastHeartbeatSentTS = getTime();
+        }
+    }
+
+    private boolean runPreVoteRoundLocked(int suspectingView) throws InterruptedException {
+        assert Thread.holdsLock(this);
+        long roundId = ++nextPreVoteRoundId;
+        activePreVoteRoundId = roundId;
+        activePreVoteView = suspectingView;
+        preVoteGranted.clear();
+        preVoteGranted.set(processDescriptor.localId);
+
+        PreVoteRequest request = new PreVoteRequest(suspectingView, roundId,
+                processDescriptor.localId);
+        network.sendToOthers(request);
+
+        long deadline = getTime() + PRE_VOTE_TIMEOUT_MS;
+        while (view == suspectingView && activePreVoteRoundId == roundId &&
+               preVoteGranted.cardinality() < processDescriptor.majority) {
+            long remaining = deadline - getTime();
+            if (remaining <= 0) {
+                break;
+            }
+            wait(remaining);
+        }
+
+        boolean granted = view == suspectingView && activePreVoteRoundId == roundId &&
+                          preVoteGranted.cardinality() >= processDescriptor.majority;
+        if (logger.isDebugEnabled()) {
+            logger.debug("Pre-vote round finished: view={} roundId={} granted={} grants={}/{}",
+                    suspectingView, roundId, granted, preVoteGranted.cardinality(),
+                    processDescriptor.majority);
+        }
+        activePreVoteRoundId = -1L;
+        activePreVoteView = -1;
+        preVoteGranted.clear();
+        return granted;
+    }
+
+    private void handlePreVoteRequest(PreVoteRequest request, int sender) {
+        boolean granted;
+        synchronized (this) {
+            granted = shouldGrantPreVoteLocked(request);
+        }
+        PreVoteReply reply = new PreVoteReply(request.getView(), request.getRoundId(), granted);
+        network.sendMessage(reply, sender);
+    }
+
+    private boolean shouldGrantPreVoteLocked(PreVoteRequest request) {
+        assert Thread.holdsLock(this);
+        if (request.getView() != view) {
+            return false;
+        }
+        if (processDescriptor.isLocalProcessLeader(view)) {
+            return false;
+        }
+        return getTime() - lastHeartbeatRcvdTS >= suspectTimeout;
+    }
+
+    private void handlePreVoteReply(PreVoteReply reply, int sender) {
+        synchronized (this) {
+            if (reply.getView() != view || reply.getView() != activePreVoteView) {
+                return;
+            }
+            if (reply.getRoundId() != activePreVoteRoundId) {
+                return;
+            }
+            if (!reply.isGranted()) {
+                return;
+            }
+            preVoteGranted.set(sender);
+            if (preVoteGranted.cardinality() >= processDescriptor.majority) {
+                notifyAll();
+            }
         }
     }
 
