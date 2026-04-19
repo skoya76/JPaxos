@@ -1,106 +1,73 @@
-JPaxos and mPaxos /master/
-==========================
+Dynatune for Multi-Paxos: Dynamic Election Parameter Tuning for Fast Leader Failover
+====================================================================================
 
-Description
+This repository is forked from [JPaxos/Jpaxos](https://github.com/JPaxos/Jpaxos)
+at commit
+[`cad00384dc1e69f2f4bf53b7627eea9c66af55ed`](https://github.com/JPaxos/Jpaxos/commit/cad00384dc1e69f2f4bf53b7627eea9c66af55ed).
+
+This repository provides a research implementation of Dynatune integrated into
+[JPaxos](https://github.com/JPaxos/Jpaxos). Dynatune enables dynamic tuning of
+election parameters for faster and more stable leader failover. This
+implementation is used in the evaluation of our research paper on timely leader
+failover in state machine replication.
+
+For information about JPaxos itself, please refer to the
+[original JPaxos README](https://github.com/JPaxos/Jpaxos/blob/master/README.md).
+
+Key Changes
 -----------
 
-JPaxos is a Java library and runtime system for building efficient replicated
-state machines (highly-available services). With JPaxos it is easy to make
-a user-provided service which is tolerant to machine crashes. Our system
-supports the crash-recovery model of failure and tolerates message loss and
-communication delays.
+The following changes are introduced on top of JPaxos from commit
+[`cad00384dc1e69f2f4bf53b7627eea9c66af55ed`](https://github.com/JPaxos/Jpaxos/commit/cad00384dc1e69f2f4bf53b7627eea9c66af55ed):
 
-mPaxos builds on JPaxos and offers a programming framework which leverages 
-persistent memory (pmem), also known as Non-Volatile Memory (NVM), for building
-more performant replicated state machines, which write critical data to pmem
-rather than to stable storage. Parts of mPaxos are built in C++ using PMDK
-library. For more on pmem, see: 
-https://www.snia.org/technology-focus/persistent-memory.
+* **Pre-vote mechanism**: Introduces a pre-vote phase that verifies whether a
+  majority of non-leader nodes have lost contact with the current leader before
+  initiating an election. It prevents temporarily partitioned nodes from
+  triggering unnecessary elections. This mechanism is widely adopted in modern
+  consensus algorithms such as Raft.
 
-mPaxosSM is a sibling version of mPaxos that requires that also the 
-user-provided service writes to pmem. It is available at: 
-https://github.com/JPaxos/mPaxosSM.
+* **Dynatune integration**: Introduces Dynatune, which dynamically adjusts
+  election parameters based on network conditions measured via heartbeat
+  exchanges in WAN environments. It enables faster and more stable leader
+  failover under fluctuating network conditions, reducing service downtime.
 
-All our systems are based on solid theoretical foundations, following the 
-state-of-the-art in group communication research.
+* **Experiment log instrumentation**: Adds explicit log markers to capture key
+  events in the leader failover process for evaluation in the research paper
+  and in the accompanying benchmark tools.
 
-Experiment Log Markers
-----------------------
+Research Paper
+--------------
 
-The static-network-failure benchmark parses explicit JPaxos log markers that
-mirror the Raft benchmark events:
+This implementation is used in the following work:
 
-* `JPAXOS_STARTING_NEW_ELECTION localId=<id> view=<view> suspectedLeader=<id>`
-  - Emitted immediately before JPaxos sends Prepare for a real view-change/election
-    path. The `view` value is the newly attempted view, so benchmark analysis
-    treats the first marker after a leader failure with `view > failed_view` as
-    the detection point.
+* *Dynamic Tuning of Election Parameters for Timely Leader Failover in State
+  Machine Replication*  
+  IEEE Access (under review; details to be announced)
 
-* `JPAXOS_BECAME_LEADER localId=<id> view=<view>`
-  - Emitted when the new view has been prepared and the local proposer can act
-    as the leader for that view.
+The evaluation compares a pre-vote-enabled JPaxos baseline against a
+Dynatune-integrated version of JPaxos:
 
-You are free to use our systems as the experimental platforms for doing 
-research on software-based replication, or for any other purposes, provided
-that the LGPL 3.0 licence is respected, moreover, any research papers which
-are presenting the results obtained with the use of our systems must reference
-the appropriate articles enlisted in the LICENCE file and below.
+* **Baseline**: JPaxos with pre-vote and experiment logs, based on commit
+  [`b3ce902aeff43fbd8fa44d5b3727c16fab2fca9f`](https://github.com/skoya76/JPaxos/commit/b3ce902aeff43fbd8fa44d5b3727c16fab2fca9f)
+* **Dynatune**: JPaxos with pre-vote, experiment logs, and Dynatune, using the
+  latest commits in this repository
 
-Research Papers
----------------
+Previous Publications
+---------------------
 
-* Failure Recovery from Persistent Memory in Paxos-based State Machine 
-  Replication. Jan Kończak, Paweł T. Wojciechowski. 40th International 
-  Symposium on Reliable Distributed Systems (SRDS 2021).
-
-* Recovery Algorithms for Paxos-based State Machine Replication. Jan Kończak,
-  Paweł T. Wojciechowski, Nuno Santos, Tomasz Żurkowski and André Schiper.
-  IEEE Transactions on Dependable and Secure Computing (TPDS), 
-  Volume: 18, Issue: 2, March-April 1, 2021, available at: 
-  https://ieeexplore.ieee.org/abstract/document/8758801
-
-* JPaxos: State Machine Replication Based on the Paxos Protocol. Jan Kończak,
-  Nuno Santos, Tomasz Żurkowski, Paweł T. Wojciechowski and André Schiper.
-  Technical Report 167765, EPFL, July 2011, available at: 
-  https://infoscience.epfl.ch/record/167765.
-
-Version
--------
-
-The gitub repository may not contain the most recent version of our systems.
-Please query the authors for more recent code, especially if the last commit
-is far in the past.
+* *Dynatune: Dynamic Tuning of Failure Detection for Adaptability and
+  Robustness*  
+  APDCM 2025 (IPDPS Workshop)  
+  Preprint: https://arxiv.org/abs/2507.15154
 
 License
 -------
 
-This software is distributed under the LGPL 3.0 licence. For license details
-please read the LICENCE file.
+This project is a fork of JPaxos and is distributed under the
+[LGPL-3.0](./LICENSE) license, following the licensing terms of the original
+JPaxos project. The modifications introduced in this repository, including the
+pre-vote mechanism, Dynatune integration, and experiment log instrumentation,
+are also distributed under LGPL-3.0.
 
-Contact and authors
--------------------
-
-JPaxos was a joint work between the Distributed System Laboratory (LSR-EPFL)
-and Poznan University of Technology (PUT). It has been further developed by
-Poznan University of Technology. mPaxos has been developed at PUT.
-
-Institutional pages and contact details:
-
-* EPFL: http://archiveweb.epfl.ch/lsrwww.epfl.ch/
-* PUT:  http://www.cs.put.poznan.pl/persistentdatastore/
-
-Contributors:
-
-At EPFL-LSR:
-
-* Andre Schiper (no longer active)
-* Nuno Santos (no longer active)
-* Lisa Nguyen Quang Do (no longer active)
-
-At PUT:
-
-* Jan Kończak
-* Maciej Kokociński
-* Tadeusz Kobus
-* Paweł T. Wojciechowski
-* Tomasz Żurkowski (no longer active)
+Original JPaxos authors: Distributed System Laboratory (LSR-EPFL) and Poznan
+University of Technology (PUT).
