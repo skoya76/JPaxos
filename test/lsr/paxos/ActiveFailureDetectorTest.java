@@ -34,6 +34,37 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldAllowRuntimeTimeoutOverridesAndRestoreDefaults() {
+        assertEquals(1000, failureDetector.getDefaultSuspectTimeout());
+        assertEquals(500, failureDetector.getDefaultSendTimeout());
+        assertEquals(1000, failureDetector.getSuspectTimeout());
+        assertEquals(500, failureDetector.getSendTimeout());
+
+        failureDetector.setSuspectTimeout(250);
+        failureDetector.setSendTimeout(125);
+
+        assertEquals(250, failureDetector.getSuspectTimeout());
+        assertEquals(125, failureDetector.getSendTimeout());
+        assertEquals(1000, failureDetector.getDefaultSuspectTimeout());
+        assertEquals(500, failureDetector.getDefaultSendTimeout());
+
+        failureDetector.restoreDefaultTimeouts();
+
+        assertEquals(1000, failureDetector.getSuspectTimeout());
+        assertEquals(500, failureDetector.getSendTimeout());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectNonPositiveSuspectTimeout() {
+        failureDetector.setSuspectTimeout(0);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectNonPositiveSendTimeout() {
+        failureDetector.setSendTimeout(-1);
+    }
+
+    @Test
     public void shouldGrantPreVoteImmediatelyWhenLeaderIsUnknown() throws Exception {
         ProcessDescriptorHelper.initialize(3, 1);
         ActiveFailureDetector follower = new ActiveFailureDetector(
