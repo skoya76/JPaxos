@@ -64,7 +64,7 @@
 			</classpath>
 			<formatter type="brief" usefile="false" />
 			<batchtest>
-				<fileset dir="${test.dir}" includes="**/*Test.java" />
+				<fileset dir="${test.dir}" includes="**/*Test.java" excludes="${test.excludes}" />
 			</batchtest>
 			<assertions>
 				<enable />
