@@ -582,6 +582,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         if (suggestedInterval > 0) {
             lastSuggestedHeartbeatInterval = suggestedInterval;
         }
+        // Keep this at INFO so experiment log collectors can recover the full Dynatune
+        // tuning timeline without requiring debug logging in the container.
+        logger.info(
+                "Dynatune follower recalculated timeouts: view={} leader={} rttMeanMs={} rttStdDevMs={} " +
+                "packetLossRate={} etMs={} suspectTimeoutMs={} heartbeatIntervalMs={} samplesRtt={} samplesId={}",
+                view, processDescriptor.getLeaderOfView(view), mean, stddev, packetLossRate, et,
+                newSuspectTimeout, suggestedInterval, observedRtts.size(), observedHeartbeatIds.size());
     }
 
     private static double computeMean(ArrayDeque<Long> samples) {
