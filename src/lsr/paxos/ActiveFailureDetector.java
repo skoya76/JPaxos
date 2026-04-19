@@ -13,6 +13,8 @@ import lsr.paxos.messages.Alive;
 import lsr.paxos.messages.AliveReply;
 import lsr.paxos.messages.Message;
 import lsr.paxos.messages.MessageType;
+import lsr.paxos.messages.PreVoteReply;
+import lsr.paxos.messages.PreVoteRequest;
 import lsr.paxos.network.MessageHandler;
 import lsr.paxos.network.Network;
 import lsr.paxos.storage.Storage;
@@ -67,6 +69,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private int lastSuggestedHeartbeatInterval = -1;
     /** Follower role: true once tuning moves from warmup to active computation. */
     private boolean followerTuningStarted = false;
+    /** How long to wait for pre-vote replies before giving up (ms). */
+    private static final int PRE_VOTE_TIMEOUT_MS = 100;
+    /** Pre-vote round state (guarded by synchronized(this)). */
+    private long nextPreVoteRoundId = 0L;
+    private long activePreVoteRoundId = -1L;
+    private int activePreVoteView = -1;
+    private final BitSet preVoteGranted = new BitSet();
 
     private final FailureDetectorListener fdListener;
 
@@ -218,6 +227,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 view = newView;
                 lastHeartbeatRcvdTS = getTime();
                 suspectTimeout = defaultSuspectTimeout;
+                activePreVoteRoundId = -1L;
+                activePreVoteView = -1;
+                preVoteGranted.clear();
                 resetFollowerObservations();
                 resetLeaderObservations();
                 ActiveFailureDetector.this.notifyAll();
@@ -304,6 +316,11 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                             suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
                         }
                         if (!processDescriptor.isLocalProcessLeader(view)) {
+                            if (!runPreVoteRoundLocked(view)) {
+                                // Back off after a failed pre-vote to avoid tight suspect loops.
+                                lastHeartbeatRcvdTS = getTime();
+                                continue;
+                            }
                             fdListener.suspect(view);
                             int oldView = view;
                             while (oldView == view) {
@@ -331,6 +348,15 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     final class InnerMessageHandler implements MessageHandler {
 
         public void onMessageReceived(Message message, int sender) {
+            if (message.getType() == MessageType.PreVoteRequest) {
+                handlePreVoteRequest((PreVoteRequest) message, sender);
+                return;
+            }
+            if (message.getType() == MessageType.PreVoteReply) {
+                handlePreVoteReply((PreVoteReply) message, sender);
+                return;
+            }
+
             if (processDescriptor.isLocalProcessLeader(view)) {
                 if (message.getType() == MessageType.AliveReply) {
                     handleAliveReply((AliveReply) message, sender);
@@ -403,6 +429,79 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 lastHeartbeatSentTS = getTime();
                 rescheduleAllFollowersLocked(lastHeartbeatSentTS);
                 ActiveFailureDetector.this.notifyAll();
+            }
+        }
+    }
+
+    private boolean runPreVoteRoundLocked(int suspectingView) throws InterruptedException {
+        assert Thread.holdsLock(this);
+        long roundId = ++nextPreVoteRoundId;
+        activePreVoteRoundId = roundId;
+        activePreVoteView = suspectingView;
+        preVoteGranted.clear();
+        preVoteGranted.set(processDescriptor.localId);
+
+        PreVoteRequest request = new PreVoteRequest(suspectingView, roundId,
+                processDescriptor.localId);
+        network.sendToOthers(request);
+
+        long deadline = getTime() + PRE_VOTE_TIMEOUT_MS;
+        while (view == suspectingView && activePreVoteRoundId == roundId &&
+               preVoteGranted.cardinality() < processDescriptor.majority) {
+            long remaining = deadline - getTime();
+            if (remaining <= 0) {
+                break;
+            }
+            wait(remaining);
+        }
+
+        boolean granted = view == suspectingView && activePreVoteRoundId == roundId &&
+                          preVoteGranted.cardinality() >= processDescriptor.majority;
+        if (logger.isDebugEnabled()) {
+            logger.debug("Pre-vote round finished: view={} roundId={} granted={} grants={}/{}",
+                    suspectingView, roundId, granted, preVoteGranted.cardinality(),
+                    processDescriptor.majority);
+        }
+        activePreVoteRoundId = -1L;
+        activePreVoteView = -1;
+        preVoteGranted.clear();
+        return granted;
+    }
+
+    private void handlePreVoteRequest(PreVoteRequest request, int sender) {
+        boolean granted;
+        synchronized (this) {
+            granted = shouldGrantPreVoteLocked(request);
+        }
+        PreVoteReply reply = new PreVoteReply(request.getView(), request.getRoundId(), granted);
+        network.sendMessage(reply, sender);
+    }
+
+    private boolean shouldGrantPreVoteLocked(PreVoteRequest request) {
+        assert Thread.holdsLock(this);
+        if (request.getView() != view) {
+            return false;
+        }
+        if (processDescriptor.isLocalProcessLeader(view)) {
+            return false;
+        }
+        return getTime() - lastHeartbeatRcvdTS >= suspectTimeout;
+    }
+
+    private void handlePreVoteReply(PreVoteReply reply, int sender) {
+        synchronized (this) {
+            if (reply.getView() != view || reply.getView() != activePreVoteView) {
+                return;
+            }
+            if (reply.getRoundId() != activePreVoteRoundId) {
+                return;
+            }
+            if (!reply.isGranted()) {
+                return;
+            }
+            preVoteGranted.set(sender);
+            if (preVoteGranted.cardinality() >= processDescriptor.majority) {
+                notifyAll();
             }
         }
     }
