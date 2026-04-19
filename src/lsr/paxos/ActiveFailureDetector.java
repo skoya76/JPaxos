@@ -89,7 +89,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         thread = new Thread(this, "FailureDetector");
         thread.setDaemon(true);
         innerListener = new InnerMessageHandler();
-        storage.addViewChangeListener(viewCahngeListener);
+        storage.addViewChangeListener(viewChangeListener);
     }
 
     public int getDefaultSuspectTimeout() {
@@ -212,13 +212,15 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
      *
      * @param newLeader - process id of the new leader
      */
-    protected Storage.ViewChangeListener viewCahngeListener = new Storage.ViewChangeListener() {
+    protected Storage.ViewChangeListener viewChangeListener = new Storage.ViewChangeListener() {
 
         public void viewChanged(int newView, int newLeader) {
             synchronized (ActiveFailureDetector.this) {
                 logger.debug("FD has been informed about view {}", newView);
                 view = newView;
                 lastHeartbeatRcvdTS = getTime();
+                suspectTimeout = defaultSuspectTimeout;
+                resetFollowerObservations();
                 resetLeaderObservations();
                 ActiveFailureDetector.this.notifyAll();
             }
