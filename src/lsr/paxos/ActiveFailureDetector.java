@@ -119,6 +119,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         validateTimeout("suspectTimeout", suspectTimeout);
         synchronized (this) {
             this.suspectTimeout = suspectTimeout;
+            // Update lastHeartbeatRcvdTS to now to avoid stale timestamp issue
+            // when suspectTimeout changes. This ensures the suspect timer
+            // is recalculated with the current timeout value.
+            lastHeartbeatRcvdTS = getTime();
             notifyAll();
         }
     }
@@ -686,8 +690,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         int oldSuspectTimeout = suspectTimeout;
         if (newSuspectTimeout > 0 && newSuspectTimeout != oldSuspectTimeout) {
             setSuspectTimeout(newSuspectTimeout);
-            logger.info("Dynatune updated E_t(suspectTimeout): oldMs={} newMs={} samples={}",
-                    oldSuspectTimeout, newSuspectTimeout, observedRtts.size());
+            logger.info("Dynatune updated E_t(suspectTimeout): view={} oldMs={} newMs={} samples={}",
+                    view, oldSuspectTimeout, newSuspectTimeout, observedRtts.size());
         }
         lastComputedEt = newSuspectTimeout;
 
@@ -699,8 +703,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             lastSuggestedHeartbeatInterval = suggestedInterval;
             if (suggestedInterval != oldSuggestedInterval) {
                 logger.info(
-                        "Dynatune updated suggested heartbeat interval: oldMs={} newMs={} lossRate={} etMs={}",
-                        oldSuggestedInterval, suggestedInterval, packetLossRate, newSuspectTimeout);
+                        "Dynatune updated suggested heartbeat interval: view={} oldMs={} newMs={} lossRate={} etMs={}",
+                        view, oldSuggestedInterval, suggestedInterval, packetLossRate,
+                        newSuspectTimeout);
             }
         }
         if (logger.isDebugEnabled()) {
