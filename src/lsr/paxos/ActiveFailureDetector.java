@@ -89,7 +89,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         thread = new Thread(this, "FailureDetector");
         thread.setDaemon(true);
         innerListener = new InnerMessageHandler();
-        storage.addViewChangeListener(viewCahngeListener);
+        storage.addViewChangeListener(viewChangeListener);
     }
 
     public int getDefaultSuspectTimeout() {
@@ -213,7 +213,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
      * 
      * @param newLeader - process id of the new leader
      */
-    protected Storage.ViewChangeListener viewCahngeListener = new Storage.ViewChangeListener() {
+    protected Storage.ViewChangeListener viewChangeListener = new Storage.ViewChangeListener() {
 
         public void viewChanged(int newView, int newLeader) {
             synchronized (ActiveFailureDetector.this) {
@@ -532,19 +532,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         long heartbeatId = nextHeartbeatId == null ? 0L : nextHeartbeatId.longValue();
         nextHeartbeatIdByFollower.put(followerId, heartbeatId + 1L);
         return heartbeatId;
-    }
-
-    private Map<Integer, Alive> buildPerFollowerAlive(int logNextId, long heartbeatId,
-                                                      int viewSnapshot) {
-        Map<Integer, Alive> result = new HashMap<Integer, Alive>();
-        for (int replicaId = 0; replicaId < processDescriptor.numReplicas; replicaId++) {
-            if (replicaId == processDescriptor.localId) {
-                continue;
-            }
-            result.put(replicaId,
-                    createAliveForFollowerLocked(replicaId, logNextId, heartbeatId, viewSnapshot));
-        }
-        return result;
     }
 
     private void resetFollowerObservations() {
