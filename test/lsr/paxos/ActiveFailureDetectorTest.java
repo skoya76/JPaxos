@@ -303,7 +303,7 @@ public class ActiveFailureDetectorTest {
 
     private static void invokeViewChanged(ActiveFailureDetector detector, int newView)
             throws Exception {
-        Field listenerField = ActiveFailureDetector.class.getDeclaredField("viewCahngeListener");
+        Field listenerField = ActiveFailureDetector.class.getDeclaredField("viewChangeListener");
         listenerField.setAccessible(true);
         Storage.ViewChangeListener listener = (Storage.ViewChangeListener) listenerField.get(detector);
         listener.viewChanged(newView, newView % 3);
