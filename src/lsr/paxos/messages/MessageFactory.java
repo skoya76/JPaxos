@@ -65,6 +65,9 @@ public final class MessageFactory {
             case Alive:
                 message = new Alive(input);
                 break;
+            case AliveReply:
+                message = new AliveReply(input);
+                break;
             case CatchUpQuery:
                 message = new CatchUpQuery(input);
                 break;
@@ -120,6 +123,8 @@ public final class MessageFactory {
                 return new Accept(bb);
             case Alive:
                 return new Alive(bb);
+            case AliveReply:
+                return new AliveReply(bb);
             case CatchUpQuery:
                 return new CatchUpQuery(bb);
             case CatchUpResponse:

@@ -25,6 +25,7 @@ public enum MessageType {
     AskForClientBatch,
 
     ForwardedClientRequests,
+    AliveReply,
     PreVoteRequest,
     PreVoteReply,
 
