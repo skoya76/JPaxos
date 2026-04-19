@@ -2,10 +2,14 @@ package lsr.paxos;
 
 import static lsr.common.ProcessDescriptor.processDescriptor;
 
+import java.util.ArrayDeque;
 import java.util.BitSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 import lsr.paxos.messages.Alive;
+import lsr.paxos.messages.AliveReply;
 import lsr.paxos.messages.Message;
 import lsr.paxos.messages.MessageType;
 import lsr.paxos.messages.PreVoteReply;
@@ -38,7 +42,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private final Storage storage;
     private final Thread thread;
 
-    private int view;
+    // Written under synchronized(this); read from Network thread without lock
+    // → volatile required for cross-thread visibility.
+    private volatile int view;
 
     /** Follower role: reception time of the last heartbeat from the leader */
     private volatile long lastHeartbeatRcvdTS;
@@ -48,7 +54,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private volatile long nextPreVoteNotBeforeTs;
     /** Leader role: time when the last message or heartbeat was sent to all */
     private volatile long lastHeartbeatSentTS;
-
+    /** Leader role: monotonically increasing heartbeat id per follower */
+    private final Map<Integer, Long> nextHeartbeatIdByFollower = new HashMap<Integer, Long>();
+    /** Leader role: last RTT observed from each follower */
+    private final Map<Integer, Long> lastRttByFollower = new HashMap<Integer, Long>();
+    /** Leader role: per-follower heartbeat interval overrides (in milliseconds). */
+    private final Map<Integer, Integer> perFollowerSendTimeouts = new HashMap<Integer, Integer>();
+    /** Leader role: next scheduled heartbeat send time per follower. */
+    private final Map<Integer, Long> perFollowerNextSendTs = new HashMap<Integer, Long>();
     /** How long to wait for pre-vote replies before giving up (ms). */
     private static final int PRE_VOTE_TIMEOUT_MS = 1000;
     /** Pre-vote round state (guarded by synchronized(this)). */
@@ -62,7 +75,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     /**
      * Initializes new instance of <code>FailureDetector</code>.
-     * 
+     *
      * @param paxos - the paxos which should be notified about suspecting leader
      * @param network - used to send and receive messages
      * @param storage - storage containing all data about paxos
@@ -98,6 +111,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         return sendTimeout;
     }
 
+    int getPerFollowerSendTimeout(int replicaId) {
+        synchronized (this) {
+            Integer timeout = perFollowerSendTimeouts.get(replicaId);
+            return timeout == null ? -1 : timeout.intValue();
+        }
+    }
+
     public void setSuspectTimeout(int suspectTimeout) {
         validateTimeout("suspectTimeout", suspectTimeout);
         synchronized (this) {
@@ -110,6 +130,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         validateTimeout("sendTimeout", sendTimeout);
         synchronized (this) {
             this.sendTimeout = sendTimeout;
+            rescheduleDefaultFollowersLocked(getTime());
             notifyAll();
         }
     }
@@ -118,7 +139,15 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         synchronized (this) {
             suspectTimeout = defaultSuspectTimeout;
             sendTimeout = defaultSendTimeout;
+            rescheduleDefaultFollowersLocked(getTime());
             notifyAll();
+        }
+    }
+
+    public long getLastRttForReplica(int replicaId) {
+        synchronized (this) {
+            Long rtt = lastRttByFollower.get(replicaId);
+            return rtt == null ? -1 : rtt.longValue();
         }
     }
 
@@ -147,9 +176,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     /**
      * Updates state of failure detector, due to leader change.
-     * 
+     *
      * Called whenever the leader changes.
-     * 
+     *
      * @param newLeader - process id of the new leader
      */
     protected Storage.ViewChangeListener viewCahngeListener = new Storage.ViewChangeListener() {
@@ -166,6 +195,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 activePreVoteView = -1;
                 preVoteGranted.clear();
                 preVoteRejected.clear();
+                resetLeaderObservations();
                 ActiveFailureDetector.this.notifyAll();
             }
         }
@@ -174,46 +204,59 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     public void run() {
         logger.info("Starting failure detector");
         try {
-            // Warning for maintainers: Deadlock danger!!
-            // The code below calls several methods in other classes while
-            // holding the this lock.
-            // If the methods called acquire locks and then try to call into
-            // this failure detector,
-            // there is the danger of deadlock. Therefore, always ensure that
-            // the methods called
-            // below do not themselves obtain locks.
-            synchronized (this) {
-                while (true) {
-                    long now = getTime();
-                    // Leader role
-                    if (processDescriptor.isLocalProcessLeader(view)) {
-                        // Send
-                        Alive alive = new Alive(view, storage.getLog().getNextId());
-                        network.sendToOthers(alive);
-                        lastHeartbeatSentTS = now;
-                        long nextSend = lastHeartbeatSentTS + sendTimeout;
+            while (true) {
+                long now = getTime();
+                boolean localProcessLeader;
+                int logNextId = -1;
+                int viewSnapshot = -1;
+                ArrayDeque<Integer> dueFollowers = null;
+                synchronized (this) {
+                    viewSnapshot = view;
+                    localProcessLeader = processDescriptor.isLocalProcessLeader(viewSnapshot);
+                    if (localProcessLeader) {
+                        logNextId = storage.getLog().getNextId();
+                        dueFollowers = scheduleDueFollowersLocked(getTime());
+                    }
+                }
 
+                if (localProcessLeader) {
+                    for (Integer replicaIdObject : dueFollowers) {
+                        int replicaId = replicaIdObject.intValue();
+                        if (view != viewSnapshot) {
+                            break;
+                        }
+                        long sendTs = getTime();
+                        Alive alive;
+                        synchronized (this) {
+                            long heartbeatId = nextHeartbeatIdForFollowerLocked(replicaId);
+                            alive = createAliveForFollowerLocked(replicaId, logNextId, heartbeatId,
+                                    viewSnapshot, sendTs);
+                        }
+                        alive.setSentTime(sendTs);
+                        network.sendMessage(alive, replicaId);
+                        synchronized (this) {
+                            markFollowerSentLocked(replicaId, sendTs);
+                        }
+                    }
+                    lastHeartbeatSentTS = getTime();
+                    now = lastHeartbeatSentTS;
+
+                    synchronized (this) {
+                        long nextSend = getNextLeaderSendTimeLocked(lastHeartbeatSentTS);
                         while (now < nextSend && processDescriptor.isLocalProcessLeader(view)) {
                             if (logger.isTraceEnabled()) {
                                 logger.trace("Sending next Alive in {} ms", nextSend - now);
                             }
                             wait(nextSend - now);
-                            // recompute the state. lastHBSentTS might have
-                            // changed.
                             now = getTime();
-                            nextSend = lastHeartbeatSentTS + sendTimeout;
+                            nextSend = getNextLeaderSendTimeLocked(lastHeartbeatSentTS);
                         }
-                        // Either no longer the leader or the it is time to send
-                        // an hearbeat
-
-                    } else {
-                        // follower role
+                    }
+                } else {
+                    synchronized (this) {
                         nextPreVoteNotBeforeTs = now;
                         long suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
-                        // Loop until either this process becomes the leader or
-                        // until is time to suspect the leader
                         while (now < suspectTime && !processDescriptor.isLocalProcessLeader(view)) {
-
                             if (logger.isTraceEnabled()) {
                                 logger.trace("Suspecting leader ({}) in {} ms",
                                         processDescriptor.getLeaderOfView(view), suspectTime - now);
@@ -252,15 +295,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                             // queued for execution
                             // on the Protocol thread.
                             fdListener.suspect(view);
-                            // The view change is done asynchronously as seen
-                            // from this thread.
-                            // To avoid raising multiple suspicions, this thread
-                            // suspends until
-                            // the view change completes. When that happens, the
-                            // method viewChange()
-                            // will be called by the Protocol thread, which will
-                            // notify() this
-                            // monitor, thereby unlocking this thread.
                             int oldView = view;
                             while (oldView == view) {
                                 logger.debug("FD is waiting for view change from {}", oldView);
@@ -279,9 +313,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     /**
      * Intersects any message sent or received, used to reset the timeouts for
      * sending and receiving ALIVE messages.
-     * 
+     *
      * These methods are called by the Network thread.
-     * 
+     *
      * @author Nuno Santos (LSR)
      */
     final class InnerMessageHandler implements MessageHandler {
@@ -296,17 +330,37 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 return;
             }
 
-            // followers only.
-            if (processDescriptor.isLocalProcessLeader(view))
+            if (processDescriptor.isLocalProcessLeader(view)) {
+                if (message.getType() == MessageType.AliveReply) {
+                    handleAliveReply((AliveReply) message, sender);
+                }
                 return;
+            }
 
             // Use the message as heartbeat if the local process is
             // a follower and the sender is the leader of the current view
             if (sender == processDescriptor.getLeaderOfView(view)) {
-                long now = getTime();
-                lastHeartbeatRcvdTS = now;
-                leaderKnown = true;
-                nextPreVoteNotBeforeTs = now;
+                if (message.getType() == MessageType.Alive) {
+                    Alive alive = (Alive) message;
+                    if (alive.getView() != view) {
+                        return;
+                    }
+                    long now = getTime();
+                    lastHeartbeatRcvdTS = now;
+                    leaderKnown = true;
+                    nextPreVoteNotBeforeTs = now;
+                    if (alive.getHeartbeatId() >= 0) {
+                        long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
+                        AliveReply reply = new AliveReply(alive.getView(), alive.getHeartbeatId(),
+                                alive.getHeartbeatTimestamp(), calculatedHeartbeatInterval);
+                        network.sendMessage(reply, sender);
+                    }
+                } else {
+                    long now = getTime();
+                    lastHeartbeatRcvdTS = now;
+                    leaderKnown = true;
+                    nextPreVoteNotBeforeTs = now;
+                }
             }
         }
 
@@ -330,7 +384,11 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             assert !destinations.get(processDescriptor.localId) : message;
 
             // This process just sent a message to all. Reset the timeout.
-            lastHeartbeatSentTS = getTime();
+            synchronized (ActiveFailureDetector.this) {
+                lastHeartbeatSentTS = getTime();
+                rescheduleAllFollowersLocked(lastHeartbeatSentTS);
+                ActiveFailureDetector.this.notifyAll();
+            }
         }
     }
 
@@ -436,6 +494,134 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         if (timeoutValue <= 0) {
             throw new IllegalArgumentException(timeoutName + " must be positive.");
         }
+    }
+
+    private void handleAliveReply(AliveReply reply, int sender) {
+        synchronized (this) {
+            if (reply.getView() != view) {
+                return;
+            }
+            long sentTs = reply.getHeartbeatTimestamp();
+            if (sentTs < 0) {
+                return;
+            }
+            long now = getTime();
+            long rtt = now - sentTs;
+            if (rtt <= 0) {
+                return;
+            }
+            lastRttByFollower.put(sender, rtt);
+
+            long heartbeatInterval = reply.getHeartbeatInterval();
+            if (heartbeatInterval <= 0 || heartbeatInterval > Integer.MAX_VALUE) {
+                return;
+            }
+
+            int newSendTimeout = (int) heartbeatInterval;
+            Integer previousSendTimeout = perFollowerSendTimeouts.put(sender, newSendTimeout);
+            perFollowerNextSendTs.put(sender, now + newSendTimeout);
+            if (previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
+                logger.info("Dynatune applied per-follower heartbeat interval: view={} replica={} " +
+                            "oldIntervalMs={} newIntervalMs={} measuredRttMs={}",
+                        view, sender, previousSendTimeout, newSendTimeout, rtt);
+                notifyAll();
+            }
+        }
+    }
+
+    private void resetLeaderObservations() {
+        lastRttByFollower.clear();
+        perFollowerSendTimeouts.clear();
+        perFollowerNextSendTs.clear();
+        nextHeartbeatIdByFollower.clear();
+    }
+
+    private long nextHeartbeatIdForFollowerLocked(int followerId) {
+        Long nextHeartbeatId = nextHeartbeatIdByFollower.get(followerId);
+        long heartbeatId = nextHeartbeatId == null ? 0L : nextHeartbeatId.longValue();
+        nextHeartbeatIdByFollower.put(followerId, heartbeatId + 1L);
+        return heartbeatId;
+    }
+
+    private Alive createAliveForFollowerLocked(int followerId, int logNextId, long heartbeatId,
+                                               int viewSnapshot, long heartbeatTimestamp) {
+        long rttToEmbed = -1;
+        Long lastRtt = lastRttByFollower.get(followerId);
+        if (lastRtt != null && lastRtt.longValue() > 0) {
+            rttToEmbed = lastRtt.longValue();
+        }
+        long heartbeatIntervalToEmbed = getFollowerSendTimeoutLocked(followerId);
+        return new Alive(viewSnapshot, logNextId, heartbeatId, heartbeatTimestamp,
+                rttToEmbed, heartbeatIntervalToEmbed);
+    }
+
+    private int getFollowerSendTimeoutLocked(int followerId) {
+        Integer timeout = perFollowerSendTimeouts.get(followerId);
+        if (timeout != null && timeout.intValue() > 0) {
+            return timeout.intValue();
+        }
+        return sendTimeout;
+    }
+
+    private ArrayDeque<Integer> scheduleDueFollowersLocked(long now) {
+        ArrayDeque<Integer> dueFollowers = new ArrayDeque<Integer>();
+        for (int replicaId = 0; replicaId < processDescriptor.numReplicas; replicaId++) {
+            if (replicaId == processDescriptor.localId) {
+                continue;
+            }
+            Long nextSend = perFollowerNextSendTs.get(replicaId);
+            if (nextSend == null) {
+                nextSend = now;
+            }
+            if (nextSend <= now) {
+                dueFollowers.addLast(replicaId);
+            }
+        }
+        return dueFollowers;
+    }
+
+    private void markFollowerSentLocked(int followerId, long sendTs) {
+        long interval = getFollowerSendTimeoutLocked(followerId);
+        perFollowerNextSendTs.put(followerId, sendTs + interval);
+    }
+
+    private void rescheduleDefaultFollowersLocked(long now) {
+        for (int replicaId = 0; replicaId < processDescriptor.numReplicas; replicaId++) {
+            if (replicaId == processDescriptor.localId) {
+                continue;
+            }
+            Integer override = perFollowerSendTimeouts.get(replicaId);
+            if (override != null && override.intValue() > 0) {
+                continue;
+            }
+            perFollowerNextSendTs.put(replicaId, now + sendTimeout);
+        }
+    }
+
+    private void rescheduleAllFollowersLocked(long now) {
+        for (int replicaId = 0; replicaId < processDescriptor.numReplicas; replicaId++) {
+            if (replicaId == processDescriptor.localId) {
+                continue;
+            }
+            perFollowerNextSendTs.put(replicaId, now + getFollowerSendTimeoutLocked(replicaId));
+        }
+    }
+
+    private long getNextLeaderSendTimeLocked(long fallbackTs) {
+        long nextSend = Long.MAX_VALUE;
+        for (Long ts : perFollowerNextSendTs.values()) {
+            if (ts.longValue() < nextSend) {
+                nextSend = ts.longValue();
+            }
+        }
+        if (nextSend == Long.MAX_VALUE) {
+            return fallbackTs + sendTimeout;
+        }
+        return nextSend;
+    }
+
+    private long getSuggestedHeartbeatIntervalForReply() {
+        return -1;
     }
 
     private final static Logger logger = LoggerFactory.getLogger(ActiveFailureDetector.class);
