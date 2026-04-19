@@ -89,7 +89,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         thread = new Thread(this, "FailureDetector");
         thread.setDaemon(true);
         innerListener = new InnerMessageHandler();
-        storage.addViewChangeListener(viewCahngeListener);
+        storage.addViewChangeListener(viewChangeListener);
     }
 
     public int getDefaultSuspectTimeout() {
