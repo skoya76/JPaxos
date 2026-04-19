@@ -68,6 +68,12 @@ public final class MessageFactory {
             case AliveReply:
                 message = new AliveReply(input);
                 break;
+            case PreVoteRequest:
+                message = new PreVoteRequest(input);
+                break;
+            case PreVoteReply:
+                message = new PreVoteReply(input);
+                break;
             case CatchUpQuery:
                 message = new CatchUpQuery(input);
                 break;
@@ -119,6 +125,10 @@ public final class MessageFactory {
                 return new Alive(bb);
             case AliveReply:
                 return new AliveReply(bb);
+            case PreVoteRequest:
+                return new PreVoteRequest(bb);
+            case PreVoteReply:
+                return new PreVoteReply(bb);
             case CatchUpQuery:
                 return new CatchUpQuery(bb);
             case CatchUpResponse:
