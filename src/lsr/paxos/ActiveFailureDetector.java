@@ -174,6 +174,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                                 lastHeartbeatRcvdTS = getTime();
                                 continue;
                             }
+                            logger.info(
+                                    "JPAXOS_STARTING_NEW_ELECTION localId={} view={} suspectedLeader={}",
+                                    processDescriptor.localId, view,
+                                    processDescriptor.getLeaderOfView(view));
                             // Raise the suspicion. A suspect task will be
                             // queued for execution
                             // on the Protocol thread.
