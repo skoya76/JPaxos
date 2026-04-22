@@ -260,6 +260,9 @@ public class Paxos implements FailureDetector.FailureDetectorListener {
         assert dispatcher.amIInDispatcher() : "Incorrect thread: " + Thread.currentThread();
         assert proposer.getState() == ProposerState.INACTIVE : "Already in proposer role.";
 
+        logger.info("JPAXOS_STARTING_NEW_ELECTION localId={} view={} suspectedLeader={}",
+                processDescriptor.localId, storage.getView(),
+                processDescriptor.getLeaderOfView(storage.getView()));
         proposer.prepareNextView();
     }
 
