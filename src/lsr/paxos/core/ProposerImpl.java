@@ -277,6 +277,8 @@ public class ProposerImpl implements Proposer {
         if (logger.isDebugEnabled(processDescriptor.logMark_Benchmark2019))
             logger.debug(processDescriptor.logMark_Benchmark2019, "PREP {}", storage.getView());
 
+        logger.info("JPAXOS_BECAME_LEADER localId={} view={}",
+                processDescriptor.localId, storage.getView());
         logger.info(processDescriptor.logMark_Benchmark, "View prepared {}", storage.getView());
 
         // Send a proposal for all instances that were not decided.
