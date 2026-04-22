@@ -134,6 +134,9 @@ public class ProposerImpl implements Proposer {
 
     private void startPreparingThisView() {
 
+        logger.info("JPAXOS_STARTING_NEW_ELECTION localId={} view={} suspectedLeader={}",
+                processDescriptor.localId, storage.getView(),
+                processDescriptor.getLeaderOfView(storage.getView()));
         logger.info(processDescriptor.logMark_Benchmark, "Preparing view: {}", storage.getView());
 
         OnLeaderElectionResultTask batcherTask = paxos.getBatcher().preparingNewView();

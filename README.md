@@ -24,6 +24,22 @@ https://github.com/JPaxos/mPaxosSM.
 All our systems are based on solid theoretical foundations, following the 
 state-of-the-art in group communication research.
 
+Experiment Log Markers
+----------------------
+
+The static-network-failure benchmark parses explicit JPaxos log markers that
+mirror the Raft benchmark events:
+
+* `JPAXOS_STARTING_NEW_ELECTION localId=<id> view=<view> suspectedLeader=<id>`
+  - Emitted immediately before JPaxos sends Prepare for a real view-change/election
+    path. The `view` value is the newly attempted view, so benchmark analysis
+    treats the first marker after a leader failure with `view > failed_view` as
+    the detection point.
+
+* `JPAXOS_BECAME_LEADER localId=<id> view=<view>`
+  - Emitted when the new view has been prepared and the local proposer can act
+    as the leader for that view.
+
 You are free to use our systems as the experimental platforms for doing 
 research on software-based replication, or for any other purposes, provided
 that the LGPL 3.0 licence is respected, moreover, any research papers which
