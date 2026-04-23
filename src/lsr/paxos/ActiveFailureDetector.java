@@ -265,6 +265,12 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         preVoteGranted.clear();
         preVoteGranted.set(processDescriptor.localId);
 
+        logger.info("JPAXOS_STARTING_PRE_VOTE localId={} view={} suspectedLeader={} " +
+                    "suspectTimeoutMs={} preVoteTimeoutMs={}",
+                processDescriptor.localId, suspectingView,
+                processDescriptor.getLeaderOfView(suspectingView), suspectTimeout,
+                PRE_VOTE_TIMEOUT_MS);
+
         PreVoteRequest request = new PreVoteRequest(suspectingView, roundId,
                 processDescriptor.localId);
         network.sendToOthers(request);
