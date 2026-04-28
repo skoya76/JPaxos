@@ -724,7 +724,12 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         double mean = computeMean(observedRtts);
         double stddev = computeStdDev(observedRtts, mean);
         double et = mean + processDescriptor.dynatuneSafetyFactor * stddev;
-        int newSuspectTimeout = clampToPositiveIntCeil(et);
+        // Randomize E_t in [1.0, 2.0) to stagger view-change triggers across
+        // followers and reduce concurrent Prepare storms (analogous to Raft's
+        // randomized election timeout).
+        double jitter = 1.0 + ThreadLocalRandom.current().nextDouble();
+        double randomizedEt = et * jitter;
+        int newSuspectTimeout = clampToPositiveIntCeil(randomizedEt);
         int oldSuspectTimeout = suspectTimeout;
         if (newSuspectTimeout > 0 && newSuspectTimeout != oldSuspectTimeout) {
             setSuspectTimeout(newSuspectTimeout);
@@ -739,6 +744,13 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         if (suggestedInterval > 0) {
             lastSuggestedHeartbeatInterval = suggestedInterval;
         }
+        // Keep this at INFO so experiment log collectors can recover the full Dynatune
+        // tuning timeline without requiring debug logging in the container.
+        logger.info(
+                "Dynatune follower recalculated timeouts: view={} leader={} rttMeanMs={} rttStdDevMs={} " +
+                "packetLossRate={} etMs={} etJitter={} suspectTimeoutMs={} heartbeatIntervalMs={} samplesRtt={} samplesId={}",
+                view, processDescriptor.getLeaderOfView(view), mean, stddev, packetLossRate, et,
+                jitter, newSuspectTimeout, suggestedInterval, observedRtts.size(), observedHeartbeatIds.size());
     }
 
     private static double computeMean(ArrayDeque<Long> samples) {
