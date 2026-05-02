@@ -1,7 +1,10 @@
 package lsr.paxos;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Field;
 import java.util.BitSet;
 
 import org.junit.Before;
@@ -9,6 +12,7 @@ import org.junit.Test;
 
 import lsr.common.ProcessDescriptorHelper;
 import lsr.paxos.messages.Message;
+import lsr.paxos.messages.PreVoteRequest;
 import lsr.paxos.network.Network;
 import lsr.paxos.storage.InMemoryStorage;
 import lsr.paxos.storage.Storage;
@@ -56,6 +60,68 @@ public class ActiveFailureDetectorTest {
     @Test(expected = IllegalArgumentException.class)
     public void shouldRejectNonPositiveSendTimeout() {
         failureDetector.setSendTimeout(-1);
+    }
+
+    @Test
+    public void shouldUseDefaultSuspectTimeoutForPreVoteGrants() throws Exception {
+        ProcessDescriptorHelper.initialize(3, 1);
+        ActiveFailureDetector follower = new ActiveFailureDetector(
+                new FailureDetector.FailureDetectorListener() {
+                    @Override
+                    public void suspect(int view) {
+                    }
+                },
+                new StubNetwork(),
+                new InMemoryStorage());
+
+        follower.setSuspectTimeout(1);
+        setLastHeartbeatRcvdTS(follower, ActiveFailureDetector.getTime() - 10);
+
+        synchronized (follower) {
+            assertFalse(follower.shouldGrantPreVoteLocked(new PreVoteRequest(0, 1L, 2)));
+        }
+
+        setLastHeartbeatRcvdTS(follower,
+                ActiveFailureDetector.getTime() - follower.getDefaultSuspectTimeout() - 1);
+
+        synchronized (follower) {
+            assertTrue(follower.shouldGrantPreVoteLocked(new PreVoteRequest(0, 2L, 2)));
+        }
+    }
+
+    @Test
+    public void shouldNotUsePreVoteBackoffAsHeartbeatEvidence() throws Exception {
+        ProcessDescriptorHelper.initialize(3, 1);
+        ActiveFailureDetector follower = new ActiveFailureDetector(
+                new FailureDetector.FailureDetectorListener() {
+                    @Override
+                    public void suspect(int view) {
+                    }
+                },
+                new StubNetwork(),
+                new InMemoryStorage());
+
+        long now = ActiveFailureDetector.getTime();
+        setLastHeartbeatRcvdTS(follower, now - follower.getDefaultSuspectTimeout() - 1);
+        setNextPreVoteNotBeforeTs(follower, now + 60_000);
+
+        synchronized (follower) {
+            assertTrue(follower.shouldGrantPreVoteLocked(new PreVoteRequest(0, 3L, 2)));
+        }
+    }
+
+    private static void setLastHeartbeatRcvdTS(ActiveFailureDetector detector, long timestamp)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField("lastHeartbeatRcvdTS");
+        field.setAccessible(true);
+        field.setLong(detector, timestamp);
+    }
+
+    private static void setNextPreVoteNotBeforeTs(ActiveFailureDetector detector, long timestamp)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField("nextPreVoteNotBeforeTs");
+        field.setAccessible(true);
+        field.setLong(detector, timestamp);
     }
 
     private static class StubNetwork extends Network {

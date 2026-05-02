@@ -50,6 +50,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     /** Follower role: reception time of the last heartbeat from the leader */
     private volatile long lastHeartbeatRcvdTS;
+    /** Follower role: local backoff before starting the next pre-vote attempt. */
+    private volatile long nextPreVoteNotBeforeTs;
     /** Leader role: time when the last message or heartbeat was sent to all */
     private volatile long lastHeartbeatSentTS;
     /** Leader role: monotonically increasing heartbeat id per follower */
@@ -131,7 +133,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             this.suspectTimeout = suspectTimeout;
             // Reset the heartbeat timestamp so the suspect timer is computed
             // against the current time rather than a stale baseline.
-            lastHeartbeatRcvdTS = getTime();
+            long now = getTime();
+            lastHeartbeatRcvdTS = now;
+            nextPreVoteNotBeforeTs = now;
             notifyAll();
         }
     }
@@ -150,6 +154,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             suspectTimeout = defaultSuspectTimeout;
             sendTimeout = defaultSendTimeout;
             rescheduleDefaultFollowersLocked(getTime());
+            nextPreVoteNotBeforeTs = getTime();
             notifyAll();
         }
     }
@@ -228,7 +233,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             synchronized (ActiveFailureDetector.this) {
                 logger.debug("FD has been informed about view {}", newView);
                 view = newView;
-                lastHeartbeatRcvdTS = getTime();
+                long now = getTime();
+                lastHeartbeatRcvdTS = now;
+                nextPreVoteNotBeforeTs = now;
                 suspectTimeout = defaultSuspectTimeout;
                 activePreVoteRoundId = -1L;
                 activePreVoteView = -1;
@@ -305,10 +312,22 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                             now = getTime();
                             suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
                         }
+                        while (now < nextPreVoteNotBeforeTs &&
+                               !processDescriptor.isLocalProcessLeader(view)) {
+                            wait(nextPreVoteNotBeforeTs - now);
+                            now = getTime();
+                            suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
+                            if (now < suspectTime) {
+                                break;
+                            }
+                        }
+                        if (now < suspectTime) {
+                            continue;
+                        }
                         if (!processDescriptor.isLocalProcessLeader(view)) {
                             if (!runPreVoteRoundLocked(view)) {
                                 // Back off after a failed pre-vote to avoid tight suspect loops.
-                                lastHeartbeatRcvdTS = getTime();
+                                nextPreVoteNotBeforeTs = getTime() + suspectTimeout;
                                 continue;
                             }
                             fdListener.suspect(view);
@@ -362,7 +381,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     if (alive.getView() != view) {
                         return;
                     }
-                    lastHeartbeatRcvdTS = getTime();
+                    long now = getTime();
+                    lastHeartbeatRcvdTS = now;
+                    nextPreVoteNotBeforeTs = now;
                     observeFollowerHeartbeat(alive);
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
@@ -371,7 +392,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         network.sendMessage(reply, sender);
                     }
                 } else {
-                    lastHeartbeatRcvdTS = getTime();
+                    long now = getTime();
+                    lastHeartbeatRcvdTS = now;
+                    nextPreVoteNotBeforeTs = now;
                 }
             }
         }
@@ -454,7 +477,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         network.sendMessage(reply, sender);
     }
 
-    private boolean shouldGrantPreVoteLocked(PreVoteRequest request) {
+    boolean shouldGrantPreVoteLocked(PreVoteRequest request) {
         assert Thread.holdsLock(this);
         if (request.getView() != view) {
             return false;
@@ -462,7 +485,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         if (processDescriptor.isLocalProcessLeader(view)) {
             return false;
         }
-        return getTime() - lastHeartbeatRcvdTS >= suspectTimeout;
+        // Match Raft's lease guard: tuned/randomized timeouts may start a
+        // local pre-vote, but remote grants wait for the configured baseline.
+        return getTime() - lastHeartbeatRcvdTS >= defaultSuspectTimeout;
     }
 
     private void handlePreVoteReply(PreVoteReply reply, int sender) {
