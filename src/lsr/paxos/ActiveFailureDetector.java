@@ -748,9 +748,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         // tuning timeline without requiring debug logging in the container.
         logger.info(
                 "Dynatune follower recalculated timeouts: view={} leader={} rttMeanMs={} rttStdDevMs={} " +
-                "packetLossRate={} etMs={} etJitter={} suspectTimeoutMs={} heartbeatIntervalMs={} samplesRtt={} samplesId={}",
+                "packetLossRate={} etMs={} suspectTimeoutMs={} heartbeatIntervalMs={} samplesRtt={} samplesId={}",
                 view, processDescriptor.getLeaderOfView(view), mean, stddev, packetLossRate, et,
-                jitter, newSuspectTimeout, suggestedInterval, observedRtts.size(), observedHeartbeatIds.size());
+                newSuspectTimeout, suggestedInterval, observedRtts.size(), observedHeartbeatIds.size());
     }
 
     private static double computeMean(ArrayDeque<Long> samples) {
