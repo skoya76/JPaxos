@@ -90,6 +90,31 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldGrantPreVoteImmediatelyWhenLeaderIsUnknown() throws Exception {
+        ProcessDescriptorHelper.initialize(3, 1);
+        ActiveFailureDetector follower = new ActiveFailureDetector(
+                new FailureDetector.FailureDetectorListener() {
+                    @Override
+                    public void suspect(int view) {
+                    }
+                },
+                new StubNetwork(),
+                new InMemoryStorage());
+
+        setLastHeartbeatRcvdTS(follower, ActiveFailureDetector.getTime() - 10);
+
+        synchronized (follower) {
+            assertFalse(follower.shouldGrantPreVoteLocked(new PreVoteRequest(0, 5L, 2)));
+        }
+
+        setLeaderKnown(follower, false);
+
+        synchronized (follower) {
+            assertTrue(follower.shouldGrantPreVoteLocked(new PreVoteRequest(0, 6L, 2)));
+        }
+    }
+
+    @Test
     public void shouldNotUsePreVoteBackoffAsHeartbeatEvidence() throws Exception {
         ProcessDescriptorHelper.initialize(3, 1);
         ActiveFailureDetector follower = new ActiveFailureDetector(
@@ -152,6 +177,13 @@ public class ActiveFailureDetectorTest {
         Field field = ActiveFailureDetector.class.getDeclaredField("nextPreVoteNotBeforeTs");
         field.setAccessible(true);
         field.setLong(detector, timestamp);
+    }
+
+    private static void setLeaderKnown(ActiveFailureDetector detector, boolean leaderKnown)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField("leaderKnown");
+        field.setAccessible(true);
+        field.setBoolean(detector, leaderKnown);
     }
 
     private static class StubNetwork extends Network {

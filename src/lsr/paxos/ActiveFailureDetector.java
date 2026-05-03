@@ -50,6 +50,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     /** Follower role: reception time of the last heartbeat from the leader */
     private volatile long lastHeartbeatRcvdTS;
+    /** Follower role: whether this replica still has evidence of a live leader. */
+    private boolean leaderKnown = true;
     /** Follower role: local backoff before starting the next pre-vote attempt. */
     private volatile long nextPreVoteNotBeforeTs;
     /** Leader role: time when the last message or heartbeat was sent to all */
@@ -200,6 +202,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             view = initialView;
             long now = getTime();
             lastHeartbeatRcvdTS = now;
+            leaderKnown = true;
             nextPreVoteNotBeforeTs = now;
             thread.start();
         }
@@ -233,6 +236,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 view = newView;
                 long now = getTime();
                 lastHeartbeatRcvdTS = now;
+                leaderKnown = true;
                 nextPreVoteNotBeforeTs = now;
                 suspectTimeout = defaultSuspectTimeout;
                 activePreVoteRoundId = -1L;
@@ -323,6 +327,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                         }
                         if (!processDescriptor.isLocalProcessLeader(view)) {
                             if (!runPreVoteRoundLocked(view)) {
+                                leaderKnown = false;
                                 // Back off after a failed pre-vote to avoid tight suspect loops.
                                 nextPreVoteNotBeforeTs = getTime() + suspectTimeout;
                                 continue;
@@ -380,6 +385,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     }
                     long now = getTime();
                     lastHeartbeatRcvdTS = now;
+                    leaderKnown = true;
                     nextPreVoteNotBeforeTs = now;
                     observeFollowerHeartbeat(alive);
                     if (alive.getHeartbeatId() >= 0) {
@@ -391,6 +397,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 } else {
                     long now = getTime();
                     lastHeartbeatRcvdTS = now;
+                    leaderKnown = true;
                     nextPreVoteNotBeforeTs = now;
                 }
             }
@@ -482,9 +489,11 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         if (processDescriptor.isLocalProcessLeader(view)) {
             return false;
         }
-        // Match Raft's lease guard: tuned/randomized timeouts may start a
-        // local pre-vote, but remote grants wait for the configured baseline.
-        return getTime() - lastHeartbeatRcvdTS >= defaultSuspectTimeout;
+        // Match Raft's lease guard: when this replica still knows a leader,
+        // remote grants wait for the configured baseline. After a failed local
+        // pre-vote, the leader is treated as unknown and future pre-votes may
+        // be granted immediately, like Raft's lead=None path.
+        return !leaderKnown || getTime() - lastHeartbeatRcvdTS >= defaultSuspectTimeout;
     }
 
     private void handlePreVoteReply(PreVoteReply reply, int sender) {
