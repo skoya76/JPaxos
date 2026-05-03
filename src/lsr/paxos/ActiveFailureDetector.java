@@ -62,6 +62,8 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private final Map<Integer, Long> lastRttByFollower = new HashMap<Integer, Long>();
     /** Leader role: per-follower heartbeat interval overrides (in milliseconds). */
     private final Map<Integer, Integer> perFollowerSendTimeouts = new HashMap<Integer, Integer>();
+    /** Leader role: last heartbeat send time per follower. */
+    private final Map<Integer, Long> perFollowerLastSendTs = new HashMap<Integer, Long>();
     /** Leader role: next scheduled heartbeat send time per follower. */
     private final Map<Integer, Long> perFollowerNextSendTs = new HashMap<Integer, Long>();
     /** Follower role: observed RTT samples from leader heartbeats. */
@@ -568,11 +570,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
             int newSendTimeout = (int) heartbeatInterval;
             Integer previousSendTimeout = perFollowerSendTimeouts.put(sender, newSendTimeout);
-            perFollowerNextSendTs.put(sender, now + newSendTimeout);
+            boolean rescheduled = rescheduleFollowerFromLastSendLocked(sender, newSendTimeout);
             if (previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
                 logger.info("Dynatune applied per-follower heartbeat interval: view={} replica={} " +
                             "oldIntervalMs={} newIntervalMs={} measuredRttMs={}",
                         view, sender, previousSendTimeout, newSendTimeout, rtt);
+            }
+            if (rescheduled ||
+                previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
                 notifyAll();
             }
         }
@@ -581,6 +586,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private void resetLeaderObservations() {
         lastRttByFollower.clear();
         perFollowerSendTimeouts.clear();
+        perFollowerLastSendTs.clear();
         perFollowerNextSendTs.clear();
         nextHeartbeatIdByFollower.clear();
     }
@@ -631,7 +637,22 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     private void markFollowerSentLocked(int followerId, long sendTs) {
         long interval = getFollowerSendTimeoutLocked(followerId);
+        perFollowerLastSendTs.put(followerId, sendTs);
         perFollowerNextSendTs.put(followerId, sendTs + interval);
+    }
+
+    private boolean rescheduleFollowerFromLastSendLocked(int followerId, int interval) {
+        Long lastSend = perFollowerLastSendTs.get(followerId);
+        if (lastSend == null) {
+            return false;
+        }
+        long nextSend = lastSend.longValue() + interval;
+        Long currentNextSend = perFollowerNextSendTs.get(followerId);
+        if (currentNextSend == null || nextSend < currentNextSend.longValue()) {
+            perFollowerNextSendTs.put(followerId, nextSend);
+            return true;
+        }
+        return false;
     }
 
     private void rescheduleDefaultFollowersLocked(long now) {

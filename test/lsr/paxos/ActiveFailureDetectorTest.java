@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.util.ArrayDeque;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.BitSet;
@@ -12,6 +13,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import lsr.common.ProcessDescriptorHelper;
+import lsr.paxos.messages.AliveReply;
 import lsr.paxos.messages.Message;
 import lsr.paxos.messages.PreVoteReply;
 import lsr.paxos.messages.PreVoteRequest;
@@ -123,6 +125,24 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldCalculateHeartbeatIntervalFromElectionTimeout() throws Exception {
+        assertEquals(75, invokeComputeSuggestedHeartbeatInterval(150.0, 0.0, 0.999));
+        assertEquals(51, invokeComputeSuggestedHeartbeatInterval(102.0, 0.0, 0.999));
+    }
+
+    @Test
+    public void shouldRescheduleHeartbeatFromLastSendWhenIntervalShrinks() throws Exception {
+        long now = ActiveFailureDetector.getTime();
+        long lastSend = now - 200;
+
+        setIntField(failureDetector, "view", 0);
+        invokeMarkFollowerSent(failureDetector, 1, lastSend);
+        invokeHandleAliveReply(failureDetector, new AliveReply(0, 1L, now - 100, 50L), 1);
+
+        assertTrue(invokeScheduleDueFollowers(failureDetector, now).contains(Integer.valueOf(1)));
+    }
+
+    @Test
     public void shouldNotUsePreVoteBackoffAsHeartbeatEvidence() throws Exception {
         ProcessDescriptorHelper.initialize(3, 1);
         ActiveFailureDetector follower = new ActiveFailureDetector(
@@ -188,6 +208,47 @@ public class ActiveFailureDetectorTest {
                 "handlePreVoteReply", PreVoteReply.class, int.class);
         method.setAccessible(true);
         method.invoke(detector, reply, sender);
+    }
+
+    private static int invokeComputeSuggestedHeartbeatInterval(double et, double packetLossRate,
+                                                               double targetProbability)
+            throws Exception {
+        Method method = ActiveFailureDetector.class.getDeclaredMethod(
+                "computeSuggestedHeartbeatInterval", double.class, double.class, double.class);
+        method.setAccessible(true);
+        return ((Integer) method.invoke(null, et, packetLossRate, targetProbability)).intValue();
+    }
+
+    private static void invokeMarkFollowerSent(ActiveFailureDetector detector,
+                                               int followerId, long sendTs)
+            throws Exception {
+        Method method = ActiveFailureDetector.class.getDeclaredMethod(
+                "markFollowerSentLocked", int.class, long.class);
+        method.setAccessible(true);
+        synchronized (detector) {
+            method.invoke(detector, followerId, sendTs);
+        }
+    }
+
+    private static void invokeHandleAliveReply(ActiveFailureDetector detector,
+                                               AliveReply reply, int sender)
+            throws Exception {
+        Method method = ActiveFailureDetector.class.getDeclaredMethod(
+                "handleAliveReply", AliveReply.class, int.class);
+        method.setAccessible(true);
+        method.invoke(detector, reply, sender);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ArrayDeque<Integer> invokeScheduleDueFollowers(ActiveFailureDetector detector,
+                                                                  long now)
+            throws Exception {
+        Method method = ActiveFailureDetector.class.getDeclaredMethod(
+                "scheduleDueFollowersLocked", long.class);
+        method.setAccessible(true);
+        synchronized (detector) {
+            return (ArrayDeque<Integer>) method.invoke(detector, now);
+        }
     }
 
     private static class StubNetwork extends Network {
