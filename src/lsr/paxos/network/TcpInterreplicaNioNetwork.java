@@ -253,6 +253,46 @@ public class TcpInterreplicaNioNetwork extends Network implements Runnable {
 
         logger.debug("Attempting to establish connection to p{}", id);
 
+        // Guard against a transient DNS failure that occurs when a Docker container is
+        // stopped and restarted: the container name is briefly absent from Docker's
+        // embedded DNS resolver while the sandbox is being torn down and rebuilt.
+        //
+        // The InetSocketAddress constructor does NOT throw on lookup failure; instead it
+        // silently returns an unresolved address object.  The problem surfaces one call
+        // later: SocketChannel.connect(unresolved) throws UnresolvedAddressException,
+        // which extends RuntimeException, not IOException.  The existing catch(IOException)
+        // block does not catch it, so the exception propagates all the way up to the NIO
+        // selector thread's uncaught-exception handler (KillOnExceptionHandler), which
+        // calls System.exit(1) and kills the entire replica process.
+        //
+        // The failure is probabilistic: it only occurs when the reconnect attempt lands
+        // inside the narrow window between container stop (name removed from DNS) and
+        // container start (name re-registered).  In practice this window is ~100-300 ms,
+        // so the failure rate is low per attempt but becomes near-certain over many
+        // failure-injection iterations (observed: first failure at iteration ~43 out of
+        // 1000 planned).
+        //
+        // Fix: detect the unresolved address before calling connect(), log a warning, and
+        // schedule a retry via the existing retryConnectionPipe mechanism after
+        // tcpReconnectTimeout ms -- exactly the same retry path used for connect() errors.
+        if (target.isUnresolved()) {
+            logger.warn("DNS resolution failed for p{}, will retry in {}ms", id,
+                    processDescriptor.tcpReconnectTimeout);
+            javaNioIsMissingTimers.schedule(new TimerTask() {
+                public void run() {
+                    ByteBuffer bb = ByteBuffer.allocate(Integer.BYTES);
+                    bb.putInt(id);
+                    bb.flip();
+                    try {
+                        retryConnectionPipe.write(bb);
+                    } catch (IOException e) {
+                        logger.error("Failed to schedule DNS retry for p{}", id, e);
+                    }
+                }
+            }, processDescriptor.tcpReconnectTimeout);
+            return;
+        }
+
         if (myAtteptToConnect[id] != null) {
             try {
                 myAtteptToConnect[id].close();
