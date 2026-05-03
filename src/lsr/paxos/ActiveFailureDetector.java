@@ -524,19 +524,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         return heartbeatId;
     }
 
-    private Map<Integer, Alive> buildPerFollowerAlive(int logNextId, long heartbeatId,
-                                                      int viewSnapshot) {
-        Map<Integer, Alive> result = new HashMap<Integer, Alive>();
-        for (int replicaId = 0; replicaId < processDescriptor.numReplicas; replicaId++) {
-            if (replicaId == processDescriptor.localId) {
-                continue;
-            }
-            result.put(replicaId,
-                    createAliveForFollowerLocked(replicaId, logNextId, heartbeatId, viewSnapshot));
-        }
-        return result;
-    }
-
     private void resetFollowerObservations() {
         observedRtts.clear();
         observedHeartbeatIds.clear();
@@ -560,7 +547,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
 
     private Alive createAliveForFollowerLocked(int followerId, int logNextId, long heartbeatId,
                                                int viewSnapshot) {
-        long rttToEmbed = 0;
+        long rttToEmbed = -1;
         Long lastRtt = lastRttByFollower.get(followerId);
         if (lastRtt != null && lastRtt.longValue() >= 0) {
             rttToEmbed = lastRtt.longValue();
