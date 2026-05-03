@@ -274,7 +274,7 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
-    public void shouldEmbedZeroRttWhenNoRttObservedYet() throws Exception {
+    public void shouldEmbedNegativeOneRttWhenNoRttObservedYet() throws Exception {
         setFailureDetectorView(failureDetector, 1);
 
         Method createAlive = ActiveFailureDetector.class.getDeclaredMethod(
@@ -282,7 +282,7 @@ public class ActiveFailureDetectorTest {
         createAlive.setAccessible(true);
         Alive alive = (Alive) createAlive.invoke(failureDetector, 2, 10, 7L, 1);
 
-        assertEquals(0L, alive.getRtt());
+        assertEquals(-1L, alive.getRtt());
     }
 
     private static void invokeOnMessageReceived(ActiveFailureDetector fd, Message message, int sender)
