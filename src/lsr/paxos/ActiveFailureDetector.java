@@ -107,6 +107,20 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
     }
 
+    public long getLastRttForReplica(int replicaId) {
+        synchronized (this) {
+            Long rtt = lastRttByFollower.get(replicaId);
+            return rtt == null ? -1 : rtt.longValue();
+        }
+    }
+
+    public long getLastOneWayDelayForReplica(int replicaId) {
+        synchronized (this) {
+            Long oneWayDelay = lastOneWayDelayByFollower.get(replicaId);
+            return oneWayDelay == null ? -1 : oneWayDelay.longValue();
+        }
+    }
+
     /**
      * Starts failure detector.
      */
@@ -166,7 +180,12 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     // Leader role
                     if (processDescriptor.isLocalProcessLeader(view)) {
                         // Send
-                        Alive alive = new Alive(view, storage.getLog().getNextId());
+                        long heartbeatId = nextHeartbeatId++;
+                        long rttToEmbed = -1;
+                        long heartbeatIntervalToEmbed = sendTimeout;
+                        Alive alive = new Alive(view, storage.getLog().getNextId(),
+                                heartbeatId, rttToEmbed, heartbeatIntervalToEmbed);
+                        trackHeartbeatSendTime(heartbeatId, now);
                         network.sendToOthers(alive);
                         lastHeartbeatSentTS = now;
                         long nextSend = lastHeartbeatSentTS + sendTimeout;
@@ -241,14 +260,27 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     final class InnerMessageHandler implements MessageHandler {
 
         public void onMessageReceived(Message message, int sender) {
-            // followers only.
-            if (processDescriptor.isLocalProcessLeader(view))
+            if (processDescriptor.isLocalProcessLeader(view)) {
+                if (message.getType() == MessageType.AliveReply) {
+                    handleAliveReply((AliveReply) message, sender);
+                }
                 return;
+            }
 
             // Use the message as heartbeat if the local process is
             // a follower and the sender is the leader of the current view
             if (sender == processDescriptor.getLeaderOfView(view)) {
                 lastHeartbeatRcvdTS = getTime();
+                if (message.getType() == MessageType.Alive) {
+                    Alive alive = (Alive) message;
+                    if (alive.getHeartbeatId() >= 0) {
+                        long calculatedHeartbeatInterval = suspectTimeout / 2;
+                        network.sendMessage(
+                                new AliveReply(alive.getView(), alive.getHeartbeatId(),
+                                        calculatedHeartbeatInterval),
+                                sender);
+                    }
+                }
             }
         }
 
@@ -284,6 +316,50 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private static void validateTimeout(String timeoutName, int timeoutValue) {
         if (timeoutValue <= 0) {
             throw new IllegalArgumentException(timeoutName + " must be positive.");
+        }
+    }
+
+    private void trackHeartbeatSendTime(long heartbeatId, long sentTs) {
+        synchronized (this) {
+            heartbeatSendTsById.put(heartbeatId, sentTs);
+            while (heartbeatSendTsById.size() > MAX_TRACKED_HEARTBEATS) {
+                heartbeatSendTsById.remove(oldestTrackedHeartbeatId);
+                oldestTrackedHeartbeatId++;
+            }
+        }
+    }
+
+    private void handleAliveReply(AliveReply reply, int sender) {
+        synchronized (this) {
+            if (reply.getView() != view) {
+                return;
+            }
+            Long sentTs = heartbeatSendTsById.get(reply.getHeartbeatId());
+            if (sentTs == null) {
+                return;
+            }
+            long now = getTime();
+            long rtt = now - sentTs.longValue();
+            if (rtt < 0) {
+                return;
+            }
+            lastRttByFollower.put(sender, rtt);
+            lastOneWayDelayByFollower.put(sender, rtt / 2);
+
+            long heartbeatInterval = reply.getHeartbeatInterval();
+            if (heartbeatInterval <= 0 || heartbeatInterval > Integer.MAX_VALUE) {
+                logger.warn("Ignoring invalid heartbeat interval {} from replica {}",
+                        heartbeatInterval, sender);
+                return;
+            }
+
+            int newSendTimeout = (int) heartbeatInterval;
+            if (newSendTimeout != sendTimeout) {
+                logger.debug(
+                        "Adjusting sendTimeout from {} to {} based on feedback from replica {}",
+                        sendTimeout, newSendTimeout, sender);
+                setSendTimeout(newSendTimeout);
+            }
         }
     }
 
