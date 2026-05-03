@@ -139,6 +139,17 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldJitterPreVoteBackoffWithinOneSuspectTimeout() {
+        failureDetector.setSuspectTimeout(20);
+
+        for (int i = 0; i < 100; i++) {
+            long backoff = failureDetector.randomizedPreVoteBackoff();
+            assertTrue(backoff >= 20);
+            assertTrue(backoff < 40);
+        }
+    }
+
+    @Test
     public void shouldNotUsePreVoteBackoffAsHeartbeatEvidence() throws Exception {
         ProcessDescriptorHelper.initialize(3, 1);
         ActiveFailureDetector follower = new ActiveFailureDetector(

@@ -336,8 +336,10 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                                 if (lastHeartbeatRcvdTS == heartbeatBeforePreVote) {
                                     leaderKnown = false;
                                 }
-                                // Back off after a failed pre-vote to avoid tight suspect loops.
-                                nextPreVoteNotBeforeTs = getTime() + suspectTimeout;
+                                // Back off after a failed pre-vote. Jitter keeps
+                                // candidates from retrying in lock-step after a
+                                // reject quorum.
+                                nextPreVoteNotBeforeTs = getTime() + randomizedPreVoteBackoff();
                                 continue;
                             }
                             fdListener.suspect(view);
@@ -530,6 +532,11 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 notifyAll();
             }
         }
+    }
+
+    long randomizedPreVoteBackoff() {
+        int base = Math.max(1, suspectTimeout);
+        return base + ThreadLocalRandom.current().nextInt(base);
     }
 
     static long getTime() {
