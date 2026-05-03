@@ -88,11 +88,11 @@ public class ActiveFailureDetectorTest {
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
         assertEquals(view, reply.getView());
         assertEquals(heartbeatId, reply.getHeartbeatId());
-        assertEquals(failureDetector.getSuspectTimeout() / 2, reply.getHeartbeatInterval());
+        assertEquals(-1, reply.getHeartbeatInterval());
     }
 
     @Test
-    public void shouldClampFallbackHeartbeatIntervalToPositive() throws Exception {
+    public void shouldKeepFallbackHeartbeatIntervalUnsetBeforeTuning() throws Exception {
         int view = 1;
         int leader = view % 3;
         int logNextId = 10;
@@ -104,19 +104,13 @@ public class ActiveFailureDetectorTest {
         invokeOnMessageReceived(failureDetector, new Alive(view, logNextId, heartbeatId), leader);
 
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
-        assertEquals(1, reply.getHeartbeatInterval());
+        assertEquals(-1, reply.getHeartbeatInterval());
     }
 
     @Test
     public void shouldMeasureRttWhenLeaderReceivesAliveReply() throws Exception {
         long heartbeatId = 42L;
-        long sentTs = ActiveFailureDetector.getTime() - 30;
         int followerId = 1;
-
-        Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
-                "trackHeartbeatSendTime", int.class, long.class, long.class);
-        trackHeartbeat.setAccessible(true);
-        trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
 
         int suggestedHeartbeatInterval = 220;
         AliveReply reply = new AliveReply(0, heartbeatId,
@@ -127,25 +121,27 @@ public class ActiveFailureDetectorTest {
         long oneWayDelay = failureDetector.getLastOneWayDelayForReplica(1);
         assertTrue(rtt > 0);
         assertEquals(rtt / 2, oneWayDelay);
-        assertEquals(suggestedHeartbeatInterval, failureDetector.getSendTimeout());
+        assertEquals(suggestedHeartbeatInterval,
+                failureDetector.getPerFollowerSendTimeout(followerId));
     }
 
     @Test
     public void shouldIgnoreOutOfRangeHeartbeatIntervalFeedback() throws Exception {
         long heartbeatId = 100L;
-        long sentTs = ActiveFailureDetector.getTime() - 30;
         int followerId = 1;
 
-        Method trackHeartbeat = ActiveFailureDetector.class.getDeclaredMethod(
-                "trackHeartbeatSendTime", int.class, long.class, long.class);
-        trackHeartbeat.setAccessible(true);
-        trackHeartbeat.invoke(failureDetector, followerId, heartbeatId, sentTs);
+        int validInterval = 220;
+        AliveReply reply = new AliveReply(0, heartbeatId,
+                ActiveFailureDetector.getTime() - 30, -1L, validInterval);
+        invokeOnMessageReceived(failureDetector, reply, followerId);
+        assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
 
-        int originalSendTimeout = failureDetector.getSendTimeout();
-        invokeOnMessageReceived(failureDetector,
-                new AliveReply(0, heartbeatId, (long) Integer.MAX_VALUE + 1), 1);
+        long invalidHeartbeatId = 101L;
+        AliveReply invalidReply = new AliveReply(0, invalidHeartbeatId,
+                ActiveFailureDetector.getTime() - 30, -1L, (long) Integer.MAX_VALUE + 1);
+        invokeOnMessageReceived(failureDetector, invalidReply, followerId);
 
-        assertEquals(originalSendTimeout, failureDetector.getSendTimeout());
+        assertEquals(validInterval, failureDetector.getPerFollowerSendTimeout(followerId));
     }
 
     @Test
@@ -185,6 +181,25 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldAcceptOutOfOrderHeartbeatIdsPerPaperSpec() throws Exception {
+        // Paper §III-B: "the follower inserts the IDs into the list in ascending order"
+        // and "arrival order of heartbeat messages is not guaranteed".
+        // All received IDs (including out-of-order ones) must be stored.
+        // Duplicates are silently ignored via TreeSet.
+        int view = 1;
+        int leader = view % 3;
+
+        setFailureDetectorView(failureDetector, view);
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 5, 10, 100), leader);
+        // id=4 arrives after id=5 (out-of-order / delayed) → must still be recorded
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 4, 12, 100), leader);
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 6, 14, 100), leader);
+
+        // All 3 distinct IDs should be in the set: {4, 5, 6}
+        assertEquals(3, failureDetector.getObservedHeartbeatIdCount());
+    }
+
+    @Test
     public void shouldComputeEtAndHeartbeatIntervalFromObservations() throws Exception {
         initializeProcessDescriptorWithDynatune(3, 0, true, 0.0, 0.5, 3, 10);
         Storage storage = new InMemoryStorage();
@@ -205,9 +220,32 @@ public class ActiveFailureDetectorTest {
 
         AliveReply reply = (AliveReply) network.lastUnicastMessage;
         assertEquals(14, failureDetector.getSuspectTimeout());
-        assertEquals(4, reply.getHeartbeatInterval());
+        assertEquals(7, reply.getHeartbeatInterval());
         assertEquals(14, failureDetector.getLastComputedEt());
-        assertEquals(4, failureDetector.getLastSuggestedHeartbeatInterval());
+        assertEquals(7, failureDetector.getLastSuggestedHeartbeatInterval());
+    }
+
+    @Test
+    public void shouldUseSampleStdDevForEtComputation() throws Exception {
+        initializeProcessDescriptorWithDynatune(3, 0, true, 1.0, 0.5, 2, 10);
+        Storage storage = new InMemoryStorage();
+        network = new StubNetwork();
+        failureDetector = new ActiveFailureDetector(new FailureDetector.FailureDetectorListener() {
+            @Override
+            public void suspect(int view) {
+            }
+        }, network, storage);
+
+        int view = 1;
+        int leader = view % 3;
+        setFailureDetectorView(failureDetector, view);
+
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 1, 10, 100), leader);
+        invokeOnMessageReceived(failureDetector, new Alive(view, 10, 2, 11, 100), leader);
+
+        // mean=10.5, sample stddev=sqrt(0.5)=0.707..., Et=11.207... -> ceil=12
+        assertEquals(12, failureDetector.getSuspectTimeout());
+        assertEquals(12, failureDetector.getLastComputedEt());
     }
 
     @Test
