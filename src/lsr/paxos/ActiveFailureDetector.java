@@ -6,6 +6,8 @@ import java.util.ArrayDeque;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.NavigableSet;
+import java.util.TreeSet;
 import java.util.concurrent.ThreadLocalRandom;
 
 import lsr.paxos.messages.Alive;
@@ -62,6 +64,16 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     private final Map<Integer, Integer> perFollowerSendTimeouts = new HashMap<Integer, Integer>();
     /** Leader role: next scheduled heartbeat send time per follower. */
     private final Map<Integer, Long> perFollowerNextSendTs = new HashMap<Integer, Long>();
+    /** Follower role: observed RTT samples from leader heartbeats. */
+    private final ArrayDeque<Long> observedRtts = new ArrayDeque<Long>();
+    /** Follower role: observed heartbeat ids for loss estimation. */
+    private final NavigableSet<Long> observedHeartbeatIds = new TreeSet<Long>();
+    /** Follower role: latest computed E_t (suspicion timeout) in milliseconds. */
+    private long lastComputedEt = -1;
+    /** Follower role: latest suggested heartbeat interval for leader. */
+    private int lastSuggestedHeartbeatInterval = -1;
+    /** Follower role: true once tuning moves from warmup to active computation. */
+    private boolean followerTuningStarted = false;
     /** How long to wait for pre-vote replies before giving up (ms). */
     private static final int PRE_VOTE_TIMEOUT_MS = 1000;
     /** Pre-vote round state (guarded by synchronized(this)). */
@@ -92,7 +104,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         thread = new Thread(this, "FailureDetector");
         thread.setDaemon(true);
         innerListener = new InnerMessageHandler();
-        storage.addViewChangeListener(viewCahngeListener);
+        storage.addViewChangeListener(viewChangeListener);
     }
 
     public int getDefaultSuspectTimeout() {
@@ -122,6 +134,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         validateTimeout("suspectTimeout", suspectTimeout);
         synchronized (this) {
             this.suspectTimeout = suspectTimeout;
+            // Reset the heartbeat timestamp so the suspect timer is computed
+            // against the current time rather than a stale baseline.
+            lastHeartbeatRcvdTS = getTime();
             notifyAll();
         }
     }
@@ -148,6 +163,37 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         synchronized (this) {
             Long rtt = lastRttByFollower.get(replicaId);
             return rtt == null ? -1 : rtt.longValue();
+        }
+    }
+
+    public int getObservedRttCount() {
+        synchronized (this) {
+            return observedRtts.size();
+        }
+    }
+
+    public int getObservedHeartbeatIdCount() {
+        synchronized (this) {
+            return observedHeartbeatIds.size();
+        }
+    }
+
+    public long getLastObservedRtt() {
+        synchronized (this) {
+            Long last = observedRtts.peekLast();
+            return last == null ? -1 : last.longValue();
+        }
+    }
+
+    public long getLastComputedEt() {
+        synchronized (this) {
+            return lastComputedEt;
+        }
+    }
+
+    public int getLastSuggestedHeartbeatInterval() {
+        synchronized (this) {
+            return lastSuggestedHeartbeatInterval;
         }
     }
 
@@ -181,7 +227,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
      *
      * @param newLeader - process id of the new leader
      */
-    protected Storage.ViewChangeListener viewCahngeListener = new Storage.ViewChangeListener() {
+    protected Storage.ViewChangeListener viewChangeListener = new Storage.ViewChangeListener() {
 
         public void viewChanged(int newView, int newLeader) {
             synchronized (ActiveFailureDetector.this) {
@@ -191,10 +237,12 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                 lastHeartbeatRcvdTS = now;
                 leaderKnown = true;
                 nextPreVoteNotBeforeTs = now;
+                suspectTimeout = defaultSuspectTimeout;
                 activePreVoteRoundId = -1L;
                 activePreVoteView = -1;
                 preVoteGranted.clear();
                 preVoteRejected.clear();
+                resetFollowerObservations();
                 resetLeaderObservations();
                 ActiveFailureDetector.this.notifyAll();
             }
@@ -349,6 +397,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     lastHeartbeatRcvdTS = now;
                     leaderKnown = true;
                     nextPreVoteNotBeforeTs = now;
+                    observeFollowerHeartbeat(alive);
                     if (alive.getHeartbeatId() >= 0) {
                         long calculatedHeartbeatInterval = getSuggestedHeartbeatIntervalForReply();
                         AliveReply reply = new AliveReply(alive.getView(), alive.getHeartbeatId(),
@@ -621,7 +670,152 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     }
 
     private long getSuggestedHeartbeatIntervalForReply() {
-        return -1;
+        synchronized (this) {
+            if (lastSuggestedHeartbeatInterval > 0) {
+                return lastSuggestedHeartbeatInterval;
+            }
+            return -1;
+        }
+    }
+
+    private void observeFollowerHeartbeat(Alive alive) {
+        synchronized (this) {
+            if (alive.getRtt() > 0) {
+                observedRtts.addLast(alive.getRtt());
+                trimWindow(observedRtts);
+            }
+            if (alive.getHeartbeatId() >= 0) {
+                observedHeartbeatIds.add(alive.getHeartbeatId());
+                while (observedHeartbeatIds.size() > processDescriptor.dynatuneMaxListSize) {
+                    observedHeartbeatIds.pollFirst();
+                }
+            }
+            updateFollowerTuning();
+        }
+    }
+
+    private void resetFollowerObservations() {
+        observedRtts.clear();
+        observedHeartbeatIds.clear();
+        lastComputedEt = -1;
+        lastSuggestedHeartbeatInterval = -1;
+        followerTuningStarted = false;
+    }
+
+    private static <T> void trimWindow(ArrayDeque<T> window) {
+        while (window.size() > processDescriptor.dynatuneMaxListSize) {
+            window.removeFirst();
+        }
+    }
+
+    private void updateFollowerTuning() {
+        if (!processDescriptor.dynatuneEnabled) {
+            return;
+        }
+        int minListSize = processDescriptor.dynatuneMinListSize;
+        if (observedRtts.size() < minListSize || observedHeartbeatIds.size() < minListSize) {
+            return;
+        }
+        if (!followerTuningStarted) {
+            followerTuningStarted = true;
+            logger.info("Dynatune follower tuning started: view={} rttCount={} idCount={} minRequired={}",
+                    view, observedRtts.size(), observedHeartbeatIds.size(), minListSize);
+        }
+        double mean = computeMean(observedRtts);
+        double stddev = computeStdDev(observedRtts, mean);
+        double et = mean + processDescriptor.dynatuneSafetyFactor * stddev;
+        int newSuspectTimeout = clampToPositiveIntCeil(et);
+        int oldSuspectTimeout = suspectTimeout;
+        if (newSuspectTimeout > 0 && newSuspectTimeout != oldSuspectTimeout) {
+            setSuspectTimeout(newSuspectTimeout);
+            logger.info("Dynatune updated E_t(suspectTimeout): view={} oldMs={} newMs={} samples={}",
+                    view, oldSuspectTimeout, newSuspectTimeout, observedRtts.size());
+        }
+        lastComputedEt = newSuspectTimeout;
+
+        double packetLossRate = computePacketLossRate(observedHeartbeatIds);
+        int suggestedInterval = computeSuggestedHeartbeatInterval(newSuspectTimeout, packetLossRate,
+                processDescriptor.dynatuneHeartbeatProbability);
+        if (suggestedInterval > 0) {
+            lastSuggestedHeartbeatInterval = suggestedInterval;
+        }
+    }
+
+    private static double computeMean(ArrayDeque<Long> samples) {
+        long sum = 0;
+        for (Long sample : samples) {
+            sum += sample.longValue();
+        }
+        return sum / (double) samples.size();
+    }
+
+    private static double computeStdDev(ArrayDeque<Long> samples, double mean) {
+        if (samples.size() <= 1) {
+            return 0.0;
+        }
+        double variance = 0.0;
+        for (Long sample : samples) {
+            double delta = sample.longValue() - mean;
+            variance += delta * delta;
+        }
+        variance /= (samples.size() - 1);
+        return Math.sqrt(variance);
+    }
+
+    private static double computePacketLossRate(NavigableSet<Long> heartbeatIds) {
+        if (heartbeatIds.size() < 2) {
+            return 0.0;
+        }
+        long first = heartbeatIds.first().longValue();
+        long last = heartbeatIds.last().longValue();
+        long expected = calculatePacketCount(first, last);
+        long received = heartbeatIds.size();
+        if (expected <= 0) {
+            return 0.0;
+        }
+        double packetLossRate = 1.0 - (received / (double) expected);
+        if (packetLossRate < 0.0) {
+            return 0.0;
+        }
+        if (packetLossRate > 1.0) {
+            return 1.0;
+        }
+        return packetLossRate;
+    }
+
+    private static int computeSuggestedHeartbeatInterval(double et, double packetLossRate,
+                                                         double targetProbability) {
+        if (et <= 0) {
+            return -1;
+        }
+        double ceilLogTerm;
+        if (packetLossRate <= 0.0) {
+            ceilLogTerm = 1.0;
+        } else if (packetLossRate >= 1.0) {
+            return -1;
+        } else {
+            double logTerm = Math.log(1.0 - targetProbability) / Math.log(packetLossRate);
+            ceilLogTerm = Math.ceil(logTerm);
+        }
+        double interval = Math.floor(et / (ceilLogTerm + 1.0));
+        return clampToPositiveIntCeil(interval);
+    }
+
+    private static int clampToPositiveIntCeil(double value) {
+        if (value <= 0) {
+            return -1;
+        }
+        if (value > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) Math.ceil(value);
+    }
+
+    private static long calculatePacketCount(long firstId, long lastId) {
+        if (lastId >= firstId) {
+            return lastId - firstId + 1;
+        }
+        return (Long.MAX_VALUE - firstId) + lastId + 2;
     }
 
     private final static Logger logger = LoggerFactory.getLogger(ActiveFailureDetector.class);
