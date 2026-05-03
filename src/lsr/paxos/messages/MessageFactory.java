@@ -98,6 +98,12 @@ public final class MessageFactory {
             case ForwardedClientRequests:
                 message = new ForwardClientRequests(input);
                 break;
+            case PreVoteRequest:
+                message = new PreVoteRequest(input);
+                break;
+            case PreVoteReply:
+                message = new PreVoteReply(input);
+                break;
             default:
                 throw new IllegalArgumentException("Unknown message type: " + type);
         }
@@ -136,6 +142,10 @@ public final class MessageFactory {
                 return new AskForClientBatch(bb);
             case ForwardedClientRequests:
                 return new ForwardClientRequests(bb);
+            case PreVoteRequest:
+                return new PreVoteRequest(bb);
+            case PreVoteReply:
+                return new PreVoteReply(bb);
         }
         throw new IllegalArgumentException("Unknown message type: " + type);
     }

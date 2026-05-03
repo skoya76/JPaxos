@@ -25,6 +25,8 @@ public enum MessageType {
     AskForClientBatch,
 
     ForwardedClientRequests,
+    PreVoteRequest,
+    PreVoteReply,
 
     // Special markers used by the network implementation to raise callbacks
     // There are no classes with this messages types
