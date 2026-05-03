@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.BitSet;
 
 import org.junit.Before;
@@ -12,6 +13,7 @@ import org.junit.Test;
 
 import lsr.common.ProcessDescriptorHelper;
 import lsr.paxos.messages.Message;
+import lsr.paxos.messages.PreVoteReply;
 import lsr.paxos.messages.PreVoteRequest;
 import lsr.paxos.network.Network;
 import lsr.paxos.storage.InMemoryStorage;
@@ -115,6 +117,28 @@ public class ActiveFailureDetectorTest {
     }
 
     @Test
+    public void shouldRecordRejectedPreVoteReplies() throws Exception {
+        ProcessDescriptorHelper.initialize(3, 1);
+        ActiveFailureDetector follower = new ActiveFailureDetector(
+                new FailureDetector.FailureDetectorListener() {
+                    @Override
+                    public void suspect(int view) {
+                    }
+                },
+                new StubNetwork(),
+                new InMemoryStorage());
+
+        setIntField(follower, "view", 0);
+        setLongField(follower, "activePreVoteRoundId", 7L);
+        setIntField(follower, "activePreVoteView", 0);
+
+        invokeHandlePreVoteReply(follower, new PreVoteReply(0, 7L, false), 2);
+
+        assertEquals(1, getBitSet(follower, "preVoteRejected").cardinality());
+        assertEquals(0, getBitSet(follower, "preVoteGranted").cardinality());
+    }
+
+    @Test
     public void shouldNotUsePreVoteBackoffAsHeartbeatEvidence() throws Exception {
         ProcessDescriptorHelper.initialize(3, 1);
         ActiveFailureDetector follower = new ActiveFailureDetector(
@@ -161,9 +185,7 @@ public class ActiveFailureDetectorTest {
 
     private static void setLastHeartbeatRcvdTS(ActiveFailureDetector detector, long timestamp)
             throws Exception {
-        Field field = ActiveFailureDetector.class.getDeclaredField("lastHeartbeatRcvdTS");
-        field.setAccessible(true);
-        field.setLong(detector, timestamp);
+        setLongField(detector, "lastHeartbeatRcvdTS", timestamp);
     }
 
     private static long getLastHeartbeatRcvdTS(ActiveFailureDetector detector) throws Exception {
@@ -174,9 +196,7 @@ public class ActiveFailureDetectorTest {
 
     private static void setNextPreVoteNotBeforeTs(ActiveFailureDetector detector, long timestamp)
             throws Exception {
-        Field field = ActiveFailureDetector.class.getDeclaredField("nextPreVoteNotBeforeTs");
-        field.setAccessible(true);
-        field.setLong(detector, timestamp);
+        setLongField(detector, "nextPreVoteNotBeforeTs", timestamp);
     }
 
     private static void setLeaderKnown(ActiveFailureDetector detector, boolean leaderKnown)
@@ -184,6 +204,35 @@ public class ActiveFailureDetectorTest {
         Field field = ActiveFailureDetector.class.getDeclaredField("leaderKnown");
         field.setAccessible(true);
         field.setBoolean(detector, leaderKnown);
+    }
+
+    private static void setLongField(ActiveFailureDetector detector, String name, long value)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.setLong(detector, value);
+    }
+
+    private static void setIntField(ActiveFailureDetector detector, String name, int value)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.setInt(detector, value);
+    }
+
+    private static BitSet getBitSet(ActiveFailureDetector detector, String name) throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return (BitSet) field.get(detector);
+    }
+
+    private static void invokeHandlePreVoteReply(ActiveFailureDetector detector,
+                                                 PreVoteReply reply, int sender)
+            throws Exception {
+        Method method = ActiveFailureDetector.class.getDeclaredMethod(
+                "handlePreVoteReply", PreVoteReply.class, int.class);
+        method.setAccessible(true);
+        method.invoke(detector, reply, sender);
     }
 
     private static class StubNetwork extends Network {
