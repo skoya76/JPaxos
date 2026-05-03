@@ -110,11 +110,41 @@ public class ActiveFailureDetectorTest {
         }
     }
 
+    @Test
+    public void shouldNotUseTimeoutRecalculationAsHeartbeatEvidence() throws Exception {
+        ProcessDescriptorHelper.initialize(3, 1);
+        ActiveFailureDetector follower = new ActiveFailureDetector(
+                new FailureDetector.FailureDetectorListener() {
+                    @Override
+                    public void suspect(int view) {
+                    }
+                },
+                new StubNetwork(),
+                new InMemoryStorage());
+
+        long oldHeartbeat = ActiveFailureDetector.getTime()
+                - follower.getDefaultSuspectTimeout() - 1;
+        setLastHeartbeatRcvdTS(follower, oldHeartbeat);
+
+        follower.setSuspectTimeout(1);
+
+        synchronized (follower) {
+            assertTrue(follower.shouldGrantPreVoteLocked(new PreVoteRequest(0, 4L, 2)));
+        }
+        assertEquals(oldHeartbeat, getLastHeartbeatRcvdTS(follower));
+    }
+
     private static void setLastHeartbeatRcvdTS(ActiveFailureDetector detector, long timestamp)
             throws Exception {
         Field field = ActiveFailureDetector.class.getDeclaredField("lastHeartbeatRcvdTS");
         field.setAccessible(true);
         field.setLong(detector, timestamp);
+    }
+
+    private static long getLastHeartbeatRcvdTS(ActiveFailureDetector detector) throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField("lastHeartbeatRcvdTS");
+        field.setAccessible(true);
+        return field.getLong(detector);
     }
 
     private static void setNextPreVoteNotBeforeTs(ActiveFailureDetector detector, long timestamp)

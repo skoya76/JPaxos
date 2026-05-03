@@ -131,11 +131,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         validateTimeout("suspectTimeout", suspectTimeout);
         synchronized (this) {
             this.suspectTimeout = suspectTimeout;
-            // Reset the heartbeat timestamp so the suspect timer is computed
-            // against the current time rather than a stale baseline.
-            long now = getTime();
-            lastHeartbeatRcvdTS = now;
-            nextPreVoteNotBeforeTs = now;
             notifyAll();
         }
     }
@@ -203,6 +198,9 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     public void start(int initialView) {
         synchronized (this) {
             view = initialView;
+            long now = getTime();
+            lastHeartbeatRcvdTS = now;
+            nextPreVoteNotBeforeTs = now;
             thread.start();
         }
         // Any message received from the leader serves also as an ALIVE message.
@@ -300,7 +298,6 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                     }
                 } else {
                     synchronized (this) {
-                        lastHeartbeatRcvdTS = now;
                         long suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
                         while (now < suspectTime && !processDescriptor.isLocalProcessLeader(view)) {
                             if (logger.isTraceEnabled()) {
