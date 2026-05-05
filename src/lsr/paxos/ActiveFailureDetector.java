@@ -338,6 +338,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                                 if (lastHeartbeatRcvdTS == heartbeatBeforePreVote) {
                                     leaderKnown = false;
                                 }
+                                resetAfterFailedPreVoteLocked();
                                 // Back off after a failed pre-vote. Jitter keeps
                                 // candidates from retrying in lock-step after a
                                 // reject quorum.
@@ -539,6 +540,15 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
     long randomizedPreVoteBackoff() {
         int base = Math.max(1, suspectTimeout);
         return base + ThreadLocalRandom.current().nextInt(base);
+    }
+
+    void resetAfterFailedPreVoteLocked() {
+        assert Thread.holdsLock(this);
+        // After a false-positive suspicion (pre-vote rejected), go back to the
+        // safe defaults and drop stale follower observations so we don't keep
+        // reusing an under-estimated E_t.
+        suspectTimeout = defaultSuspectTimeout;
+        resetFollowerObservations();
     }
 
     static long getTime() {

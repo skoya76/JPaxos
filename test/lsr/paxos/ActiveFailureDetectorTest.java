@@ -8,6 +8,7 @@ import java.util.ArrayDeque;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.BitSet;
+import java.util.NavigableSet;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -214,6 +215,33 @@ public class ActiveFailureDetectorTest {
         assertEquals(oldHeartbeat, getLastHeartbeatRcvdTS(follower));
     }
 
+    @Test
+    public void shouldResetFollowerTuningStateAfterFailedPreVote() throws Exception {
+        failureDetector.setSuspectTimeout(250);
+        setLongField(failureDetector, "lastComputedEt", 777L);
+        setIntField(failureDetector, "lastSuggestedHeartbeatInterval", 333);
+        setBooleanField(failureDetector, "followerTuningStarted", true);
+
+        ArrayDeque<Long> observedRtts = getObservedRtts(failureDetector);
+        observedRtts.addLast(10L);
+        observedRtts.addLast(20L);
+
+        NavigableSet<Long> observedHeartbeatIds = getObservedHeartbeatIds(failureDetector);
+        observedHeartbeatIds.add(5L);
+        observedHeartbeatIds.add(6L);
+
+        synchronized (failureDetector) {
+            failureDetector.resetAfterFailedPreVoteLocked();
+        }
+
+        assertEquals(failureDetector.getDefaultSuspectTimeout(), failureDetector.getSuspectTimeout());
+        assertEquals(0, failureDetector.getObservedRttCount());
+        assertEquals(0, failureDetector.getObservedHeartbeatIdCount());
+        assertEquals(-1L, failureDetector.getLastComputedEt());
+        assertEquals(-1, failureDetector.getLastSuggestedHeartbeatInterval());
+        assertFalse(getBooleanField(failureDetector, "followerTuningStarted"));
+    }
+
     private static void setLastHeartbeatRcvdTS(ActiveFailureDetector detector, long timestamp)
             throws Exception {
         setLongField(detector, "lastHeartbeatRcvdTS", timestamp);
@@ -237,6 +265,20 @@ public class ActiveFailureDetectorTest {
         field.setBoolean(detector, leaderKnown);
     }
 
+    private static void setBooleanField(ActiveFailureDetector detector, String name, boolean value)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.setBoolean(detector, value);
+    }
+
+    private static boolean getBooleanField(ActiveFailureDetector detector, String name)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.getBoolean(detector);
+    }
+
     private static void setLongField(ActiveFailureDetector detector, String name, long value)
             throws Exception {
         Field field = ActiveFailureDetector.class.getDeclaredField(name);
@@ -255,6 +297,21 @@ public class ActiveFailureDetectorTest {
         Field field = ActiveFailureDetector.class.getDeclaredField(name);
         field.setAccessible(true);
         return (BitSet) field.get(detector);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ArrayDeque<Long> getObservedRtts(ActiveFailureDetector detector) throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField("observedRtts");
+        field.setAccessible(true);
+        return (ArrayDeque<Long>) field.get(detector);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static NavigableSet<Long> getObservedHeartbeatIds(ActiveFailureDetector detector)
+            throws Exception {
+        Field field = ActiveFailureDetector.class.getDeclaredField("observedHeartbeatIds");
+        field.setAccessible(true);
+        return (NavigableSet<Long>) field.get(detector);
     }
 
     private static void invokeHandlePreVoteReply(ActiveFailureDetector detector,
