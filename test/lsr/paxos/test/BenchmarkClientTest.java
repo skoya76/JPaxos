@@ -76,7 +76,7 @@ public class BenchmarkClientTest {
     @Test
     public void testSummarySection() {
         List<BenchmarkClient.Sample> samples = makeSamples(0L, 100, 1_000_000L, 10_000_000L);
-        BenchmarkClient.printResults(samples, 0L, 3000L);
+        BenchmarkClient.printResults(samples, 0L, 3000L, 0L, 0L);
         String out = output();
 
         assertTrue("Missing Summary:", out.contains("Summary:"));
@@ -91,7 +91,7 @@ public class BenchmarkClientTest {
     @Test
     public void testSummarySectionRegex() {
         List<BenchmarkClient.Sample> samples = makeSamples(0L, 100, 1_000_000L, 10_000_000L);
-        BenchmarkClient.printResults(samples, 0L, 3000L);
+        BenchmarkClient.printResults(samples, 0L, 3000L, 0L, 0L);
         String out = output();
 
         // Same regexes as analyze_benchmark_results.py
@@ -106,7 +106,7 @@ public class BenchmarkClientTest {
     @Test
     public void testHistogramSection() {
         List<BenchmarkClient.Sample> samples = makeSamples(0L, 100, 1_000_000L, 10_000_000L);
-        BenchmarkClient.printResults(samples, 0L, 3000L);
+        BenchmarkClient.printResults(samples, 0L, 3000L, 0L, 0L);
         String out = output();
 
         assertTrue(out.contains("Response time histogram:"));
@@ -117,7 +117,7 @@ public class BenchmarkClientTest {
     @Test
     public void testLatencyDistributionSection() {
         List<BenchmarkClient.Sample> samples = makeSamples(0L, 1000, 1_000_000L, 100_000_000L);
-        BenchmarkClient.printResults(samples, 0L, 5000L);
+        BenchmarkClient.printResults(samples, 0L, 5000L, 0L, 0L);
         String out = output();
 
         assertTrue(out.contains("Latency distribution:"));
@@ -133,7 +133,7 @@ public class BenchmarkClientTest {
     public void testSampleInOneSecondSection() {
         long baseMs = System.currentTimeMillis();
         List<BenchmarkClient.Sample> samples = makeSamples(baseMs, 300, 1_000_000L, 5_000_000L);
-        BenchmarkClient.printResults(samples, baseMs, baseMs + 3000L);
+        BenchmarkClient.printResults(samples, baseMs, baseMs + 3000L, 0L, 0L);
         String out = output();
 
         assertTrue(out.contains("Sample in one second:"));
@@ -148,7 +148,7 @@ public class BenchmarkClientTest {
     @Test
     public void testBlankLinesBetweenSections() {
         List<BenchmarkClient.Sample> samples = makeSamples(0L, 100, 1_000_000L, 10_000_000L);
-        BenchmarkClient.printResults(samples, 0L, 3000L);
+        BenchmarkClient.printResults(samples, 0L, 3000L, 0L, 0L);
         String out = output();
 
         // analyze_benchmark_results.py relies on \n\n to delimit sections
@@ -168,7 +168,7 @@ public class BenchmarkClientTest {
         for (int i = 0; i < 10; i++) {
             samples.add(new BenchmarkClient.Sample(1000L * i, 5_000_000L));
         }
-        BenchmarkClient.printResults(samples, 0L, 10000L);
+        BenchmarkClient.printResults(samples, 0L, 10000L, 0L, 0L);
         String out = output();
 
         assertTrue(out.contains("Summary:"));

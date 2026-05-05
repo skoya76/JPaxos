@@ -1,22 +1,32 @@
 package lsr.paxos.test;
 
 import lsr.common.Configuration;
+import lsr.common.ClientCommand;
+import lsr.common.ClientCommand.CommandType;
+import lsr.common.ClientReply;
+import lsr.common.ClientRequest;
+import lsr.common.PID;
+import lsr.common.Reply;
+import lsr.common.RequestId;
 import lsr.paxos.client.Client;
-import lsr.paxos.client.ReplicationException;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
@@ -29,30 +39,34 @@ import java.util.concurrent.locks.LockSupport;
  *
  * Open-loop design:
  *   A scheduler thread fires requests at exactly --rate req/s regardless of
- *   whether previous requests have completed.  A pool of --clients pre-connected
- *   Client objects handles the requests concurrently.  If every client is busy
- *   (latency is backing up faster than requests complete), the scheduler records
- *   a dropped request and moves on — it does NOT slow down.  This decouples the
- *   offered load from actual throughput and produces the hockey-stick curve where
- *   throughput plateaus and latency spikes when the system is overloaded.
+ *   whether previous requests have completed.  A small pool of pipelined TCP
+ *   connections carries up to --clients in-flight requests.  Replies are
+ *   matched by RequestId, so a single connection can have many outstanding
+ *   requests.  If the in-flight limit is full (latency is backing up faster
+ *   than requests complete), the scheduler records a dropped request and moves
+ *   on — it does NOT slow down.  This keeps the offered load independent from
+ *   the server's response rate.
  *
  * Usage:
  *   java -cp ... lsr.paxos.test.BenchmarkClient \
  *       --config paxos.properties \
  *       --rate   5000  \
  *       --duration 10  \
- *       --clients  200  \
+ *       --clients  20000 \
+ *       --connections 64 \
  *       --key-size  8  \
  *       --val-size 256
  */
 public class BenchmarkClient {
 
-    static int numClients   = 200;
+    static int maxInflight  = 200;
+    static int connections  = 64;
     static int targetRate   = 1000;
     static int durationSecs = 10;
     static int keySize      = 8;
     static int valSize      = 256;
     static String configFile = "paxos.properties";
+    static int drainTimeoutSecs = 5;
 
     static class Sample {
         final long sendMs;
@@ -63,27 +77,173 @@ public class BenchmarkClient {
         }
     }
 
+    static class Pending {
+        final long sendMs;
+        final long sendNs;
+
+        Pending(long sendMs, long sendNs) {
+            this.sendMs = sendMs;
+            this.sendNs = sendNs;
+        }
+    }
+
+    static class PipelinedConnection implements AutoCloseable {
+        private final PID replica;
+        private final ConcurrentLinkedQueue<Sample> samples;
+        private final AtomicLong errors;
+        private final Semaphore inflightPermits;
+        private final AtomicInteger outstanding;
+        private final ConcurrentHashMap<Integer, Pending> pending = new ConcurrentHashMap<>();
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final AtomicInteger sequenceId = new AtomicInteger(0);
+
+        private Socket socket;
+        private DataOutputStream output;
+        private DataInputStream input;
+        private Thread readerThread;
+        private long clientId;
+
+        PipelinedConnection(PID replica, ConcurrentLinkedQueue<Sample> samples,
+                            AtomicLong errors, Semaphore inflightPermits,
+                            AtomicInteger outstanding) {
+            this.replica = replica;
+            this.samples = samples;
+            this.errors = errors;
+            this.inflightPermits = inflightPermits;
+            this.outstanding = outstanding;
+        }
+
+        void connect() throws IOException {
+            socket = new Socket(replica.getHostname(), replica.getClientPort());
+            socket.setReuseAddress(true);
+            socket.setTcpNoDelay(true);
+            output = new DataOutputStream(socket.getOutputStream());
+            input = new DataInputStream(socket.getInputStream());
+
+            output.write(Client.REQUEST_NEW_ID);
+            output.flush();
+            clientId = input.readLong();
+
+            readerThread = new Thread(this::readReplies, "BenchmarkClient-reader-" + clientId);
+            readerThread.setDaemon(true);
+            readerThread.start();
+        }
+
+        void send(byte[] payload, long sendMs, long sendNs) throws IOException {
+            int seqNo = sequenceId.incrementAndGet();
+            ClientRequest request = new ClientRequest(new RequestId(clientId, seqNo), payload);
+            ClientCommand command = new ClientCommand(CommandType.REQUEST, request);
+            ByteBuffer bb = ByteBuffer.allocate(command.byteSize());
+            command.writeTo(bb);
+
+            pending.put(seqNo, new Pending(sendMs, sendNs));
+            outstanding.incrementAndGet();
+
+            try {
+                synchronized (output) {
+                    output.write(bb.array());
+                    output.flush();
+                }
+            } catch (IOException e) {
+                if (pending.remove(seqNo) != null) {
+                    outstanding.decrementAndGet();
+                }
+                throw e;
+            }
+        }
+
+        private void readReplies() {
+            while (running.get()) {
+                try {
+                    ClientReply clientReply = new ClientReply(input);
+                    if (clientReply.getResult() != ClientReply.Result.OK) {
+                        errors.incrementAndGet();
+                        continue;
+                    }
+
+                    Reply reply = new Reply(clientReply.getValue());
+                    int seqNo = reply.getRequestId().getSeqNumber();
+                    Pending p = pending.remove(seqNo);
+                    if (p == null) {
+                        errors.incrementAndGet();
+                        continue;
+                    }
+
+                    samples.add(new Sample(p.sendMs, System.nanoTime() - p.sendNs));
+                    outstanding.decrementAndGet();
+                    inflightPermits.release();
+                } catch (IOException e) {
+                    if (running.get()) {
+                        errors.incrementAndGet();
+                    }
+                    break;
+                }
+            }
+        }
+
+        int failPending() {
+            int failed = pending.size();
+            for (Integer seqNo : pending.keySet()) {
+                Pending removed = pending.remove(seqNo);
+                if (removed != null) {
+                    outstanding.decrementAndGet();
+                    inflightPermits.release();
+                }
+            }
+            return failed;
+        }
+
+        public void close() {
+            running.set(false);
+            try {
+                if (socket != null) {
+                    socket.close();
+                }
+            } catch (IOException ignored) {
+            }
+            if (readerThread != null) {
+                try {
+                    readerThread.join(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         parseArgs(args);
 
-        System.err.printf("Open-loop benchmark: rate=%d rps  clients=%d  duration=%ds%n",
-                targetRate, numClients, durationSecs);
-
-        Configuration config = new Configuration(configFile);
-
-        // Pre-connect all clients
-        BlockingQueue<Client> pool = new ArrayBlockingQueue<>(numClients);
-        for (int i = 0; i < numClients; i++) {
-            Client c = new Client(config);
-            c.connect();
-            pool.add(c);
+        if (connections < 1) {
+            connections = 1;
+        }
+        if (connections > maxInflight) {
+            connections = maxInflight;
         }
 
+        System.err.printf("Open-loop pipelined benchmark: rate=%d rps  maxInflight=%d  connections=%d  duration=%ds%n",
+                targetRate, maxInflight, connections, durationSecs);
+
+        Configuration config = new Configuration(configFile);
+        List<PID> replicas = config.getProcesses();
+        if (replicas.isEmpty()) {
+            throw new IllegalArgumentException("No replicas found in " + configFile);
+        }
+
+        Semaphore inflightPermits = new Semaphore(maxInflight);
         ConcurrentLinkedQueue<Sample> samples = new ConcurrentLinkedQueue<>();
         AtomicLong dropped = new AtomicLong(0);
         AtomicLong errors  = new AtomicLong(0);
+        AtomicInteger outstanding = new AtomicInteger(0);
 
-        ExecutorService executor = Executors.newFixedThreadPool(numClients);
+        List<PipelinedConnection> conns = new ArrayList<>();
+        for (int i = 0; i < connections; i++) {
+            PID replica = replicas.get(i % replicas.size());
+            PipelinedConnection conn = new PipelinedConnection(
+                    replica, samples, errors, inflightPermits, outstanding);
+            conn.connect();
+            conns.add(conn);
+        }
 
         byte[] payload = new byte[keySize + valSize];
         new Random().nextBytes(payload);
@@ -94,6 +254,7 @@ public class BenchmarkClient {
         long endMs        = benchStartMs + (long) durationSecs * 1000;
 
         // Scheduler loop: fire at exactly targetRate/s, fire-and-forget.
+        int nextConnection = 0;
         while (true) {
             long nowNs = System.nanoTime();
             if (nowNs < nextFireNs) {
@@ -104,33 +265,36 @@ public class BenchmarkClient {
 
             nextFireNs += intervalNs;
 
-            // Non-blocking poll: if no idle client, count as dropped.
-            final Client client = pool.poll();
-            if (client == null) {
+            // Non-blocking acquire: if the pipeline is full, count as dropped.
+            if (!inflightPermits.tryAcquire()) {
                 dropped.incrementAndGet();
                 continue;
             }
 
-            final long sendMs = System.currentTimeMillis();
-            final long sendNs = System.nanoTime();
-
-            executor.submit(() -> {
-                try {
-                    client.execute(payload);
-                    samples.add(new Sample(sendMs, System.nanoTime() - sendNs));
-                } catch (ReplicationException e) {
-                    errors.incrementAndGet();
-                } finally {
-                    pool.offer(client);
-                }
-            });
+            long sendMs = System.currentTimeMillis();
+            long sendNs = System.nanoTime();
+            PipelinedConnection conn = conns.get(nextConnection);
+            nextConnection = (nextConnection + 1) % conns.size();
+            try {
+                conn.send(payload, sendMs, sendNs);
+            } catch (IOException e) {
+                errors.incrementAndGet();
+                inflightPermits.release();
+            }
         }
 
         long benchEndMs = System.currentTimeMillis();
 
         // Give in-flight requests up to 5 s to drain before printing results.
-        executor.shutdown();
-        executor.awaitTermination(5, TimeUnit.SECONDS);
+        long drainDeadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(drainTimeoutSecs);
+        while (outstanding.get() > 0 && System.nanoTime() < drainDeadlineNs) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+
+        for (PipelinedConnection conn : conns) {
+            errors.addAndGet(conn.failPending());
+            conn.close();
+        }
 
         List<Sample> all = new ArrayList<>(samples);
         printResults(all, benchStartMs, benchEndMs, dropped.get(), errors.get());
@@ -261,7 +425,13 @@ public class BenchmarkClient {
                 case "--config":   configFile   = args[++i]; break;
                 case "--rate":     targetRate   = Integer.parseInt(args[++i]); break;
                 case "--duration": durationSecs = Integer.parseInt(args[++i]); break;
-                case "--clients":  numClients   = Integer.parseInt(args[++i]); break;
+                case "--clients":  maxInflight  = Integer.parseInt(args[++i]); break;
+                case "--connections":
+                    connections = Integer.parseInt(args[++i]);
+                    break;
+                case "--drain-timeout":
+                    drainTimeoutSecs = Integer.parseInt(args[++i]);
+                    break;
                 case "--key-size": keySize      = Integer.parseInt(args[++i]); break;
                 case "--val-size": valSize      = Integer.parseInt(args[++i]); break;
                 default:
