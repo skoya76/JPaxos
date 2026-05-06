@@ -49,10 +49,8 @@ Dynatune-integrated version of JPaxos:
 Previous Publications
 ---------------------
 
-* *Dynatune: Dynamic Tuning of Failure Detection for Adaptability and
-  Robustness*  
-  APDCM 2025 (IPDPS Workshop)  
-  Preprint: https://arxiv.org/abs/2507.15154
+* Dynatune: Dynamic Tuning of Raft Election Parameters Using Network Measurement
+  APDCM 2025 (IPDPS Workshop) — Preprint: https://arxiv.org/abs/2507.15154
 
 License
 -------
