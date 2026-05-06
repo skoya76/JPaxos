@@ -20,12 +20,6 @@ Key Changes
 The following changes are introduced on top of JPaxos from commit
 [`cad00384dc1e69f2f4bf53b7627eea9c66af55ed`](https://github.com/JPaxos/Jpaxos/commit/cad00384dc1e69f2f4bf53b7627eea9c66af55ed):
 
-* **Pre-vote mechanism**: Introduces a pre-vote phase that verifies whether a
-  majority of non-leader nodes have lost contact with the current leader before
-  initiating an election. It prevents temporarily partitioned nodes from
-  triggering unnecessary elections. This mechanism is widely adopted in modern
-  consensus algorithms such as Raft.
-
 * **Dynatune integration**: Introduces Dynatune, which dynamically adjusts
   election parameters based on network conditions measured via heartbeat
   exchanges in WAN environments. It enables faster and more stable leader
@@ -44,13 +38,13 @@ This implementation is used in the following work:
   Machine Replication*  
   IEEE Access (under review; details to be announced)
 
-The evaluation compares a pre-vote-enabled JPaxos baseline against a
+The evaluation compares a JPaxos baseline (with experiment logs) against a
 Dynatune-integrated version of JPaxos:
 
-* **Baseline**: JPaxos with pre-vote and experiment logs, based on commit
-  [`b3ce902aeff43fbd8fa44d5b3727c16fab2fca9f`](https://github.com/skoya76/JPaxos/commit/b3ce902aeff43fbd8fa44d5b3727c16fab2fca9f)
-* **Dynatune**: JPaxos with pre-vote, experiment logs, and Dynatune, using the
-  latest commits in this repository
+* **Baseline**: JPaxos with experiment logs, based on commit
+  [`81655f0a7841f4bc8b61a14922e1d6ab64a1484d`](https://github.com/skoya76/JPaxos/commit/81655f0a7841f4bc8b61a14922e1d6ab64a1484d)
+* **Dynatune**: JPaxos with experiment logs and Dynatune, using the latest
+  commits in this repository
 
 Previous Publications
 ---------------------
@@ -65,9 +59,9 @@ License
 
 This project is a fork of JPaxos and is distributed under the
 [LGPL-3.0](./LICENSE) license, following the licensing terms of the original
-JPaxos project. The modifications introduced in this repository, including the
-pre-vote mechanism, Dynatune integration, and experiment log instrumentation,
-are also distributed under LGPL-3.0.
+JPaxos project. The modifications introduced in this repository, including
+Dynatune integration and experiment log instrumentation, are also distributed
+under LGPL-3.0.
 
 Original JPaxos authors: Distributed System Laboratory (LSR-EPFL) and Poznan
 University of Technology (PUT).
