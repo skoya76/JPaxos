@@ -295,6 +295,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
                             suspectTime = lastHeartbeatRcvdTS + suspectTimeout;
                         }
                         if (!processDescriptor.isLocalProcessLeader(view)) {
+                            resetAfterSuspicionLocked();
                             fdListener.suspect(view);
                             int oldView = view;
                             while (oldView == view) {
@@ -556,6 +557,14 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             }
             updateFollowerTuning();
         }
+    }
+
+    void resetAfterSuspicionLocked() {
+        assert Thread.holdsLock(this);
+        // Discard stale RTT samples accumulated before the suspicion so Dynatune
+        // does not keep reusing an under-estimated E_t after the view change.
+        suspectTimeout = defaultSuspectTimeout;
+        resetFollowerObservations();
     }
 
     private void resetFollowerObservations() {
