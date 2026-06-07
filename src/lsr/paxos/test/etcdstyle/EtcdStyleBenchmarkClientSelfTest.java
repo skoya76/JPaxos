@@ -2,11 +2,14 @@ package lsr.paxos.test.etcdstyle;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.PrintStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -100,18 +103,18 @@ public final class EtcdStyleBenchmarkClientSelfTest {
         }
 
         long t0 = System.currentTimeMillis();
-        EtcdStyleBenchmarkClient.main(new String[] {
-                "--config", config.getAbsolutePath(),
-                "--rate", "100",
-                "--duration", "1",
-                "--total", "5",
-                "--clients", "5",
-                "--connections", "1",
-                "--request-timeout-ms", "500",
-                "--drain-timeout", "2",
-                "--key-size", "4",
-                "--val-size", "4"
-        });
+        String output = captureStdout(() -> EtcdStyleBenchmarkClient.main(new String[] {
+                    "--config", config.getAbsolutePath(),
+                    "--rate", "100",
+                    "--duration", "1",
+                    "--total", "5",
+                    "--clients", "5",
+                    "--connections", "1",
+                    "--request-timeout-ms", "500",
+                    "--drain-timeout", "2",
+                    "--key-size", "4",
+                    "--val-size", "4"
+        }));
         long elapsed = System.currentTimeMillis() - t0;
 
         server.stop();
@@ -120,6 +123,8 @@ public final class EtcdStyleBenchmarkClientSelfTest {
         // 5 workers, each fires once, each times out after ~500ms.
         // Should finish well under 10s even with worst-case scheduling.
         assertTrue(elapsed < 10_000, "timeout test should finish under 10s, got=" + elapsed + "ms");
+        assertTrue(output.contains("  Timeouts:\t5"), "summary should report all request timeouts");
+        assertTrue(hasPerSecondTimeout(output), "per-second samples should include timeout outcomes");
     }
 
     private static void runDrainTimeoutSafetyNet() throws Exception {
@@ -294,5 +299,35 @@ public final class EtcdStyleBenchmarkClientSelfTest {
         if (!condition) {
             throw new AssertionError(label);
         }
+    }
+
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    private static String captureStdout(ThrowingRunnable runnable) throws Exception {
+        PrintStream original = System.out;
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (PrintStream replacement = new PrintStream(buffer, true, StandardCharsets.UTF_8.name())) {
+            System.setOut(replacement);
+            runnable.run();
+        } finally {
+            System.setOut(original);
+        }
+        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private static boolean hasPerSecondTimeout(String output) {
+        for (String line : output.split("\\R")) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || !Character.isDigit(trimmed.charAt(0))) {
+                continue;
+            }
+            String[] fields = trimmed.split(",");
+            if (fields.length >= 10 && Integer.parseInt(fields[8]) > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -44,10 +44,8 @@ import lsr.paxos.test.etcdstyle.EtcdStyleProtocolCodec.ClientReplyFrame;
  *   --duration : fallback to derive --total when --total is not given.
  *
  *   The latency timer starts immediately before the request is handed off
- *   for sending and stops when the matching reply arrives. There is no
- *   per-request timeout and there is no client-side admission control:
- *   if a worker blocks on a slow reply, it simply consumes no rate tokens
- *   (= benchmark backpressure), exactly as in etcd benchmark.
+ *   for sending and stops when the matching reply arrives. When configured,
+ *   per-request timeout abandons a slow request so workers can continue.
  *
  * Output:
  *   Same shape as etcd benchmark (and as AsyncOpenLoopBenchmarkClient) so the
@@ -71,12 +69,20 @@ public final class EtcdStyleBenchmarkClient {
     }
 
     private static final class Sample {
-        final long startWallMs;
+        final long wallMs;
         final long latencyNs;
+        final int sent;
+        final int success;
+        final int timeout;
+        final int error;
 
-        Sample(long startWallMs, long latencyNs) {
-            this.startWallMs = startWallMs;
+        Sample(long wallMs, long latencyNs, int sent, int success, int timeout, int error) {
+            this.wallMs = wallMs;
             this.latencyNs = latencyNs;
+            this.sent = sent;
+            this.success = success;
+            this.timeout = timeout;
+            this.error = error;
         }
     }
 
@@ -312,9 +318,11 @@ public final class EtcdStyleBenchmarkClient {
             AtomicLong success = new AtomicLong(0);
             AtomicLong errors = new AtomicLong(0);
             AtomicLong timeouts = new AtomicLong(0);
-            // Lock-free sample list backed by an array (results are size-bounded by totalRequests).
-            int capacity = (int) Math.min(Integer.MAX_VALUE, totalRequests);
-            Sample[] samples = new Sample[capacity];
+            // Each request can produce one send event and one outcome event.
+            long eventCapacity = totalRequests > Integer.MAX_VALUE / 2L
+                    ? Integer.MAX_VALUE
+                    : Math.max(totalRequests, totalRequests * 2);
+            Sample[] samples = new Sample[(int) eventCapacity];
             AtomicInteger sampleIdx = new AtomicInteger(0);
 
             long startNs = System.nanoTime();
@@ -337,16 +345,16 @@ public final class EtcdStyleBenchmarkClient {
                             try {
                                 ifl = conn.send(payload);
                                 sent.incrementAndGet();
+                                addSample(samples, sampleIdx,
+                                        new Sample(reqStartWallMs, 0L, 1, 0, 0, 0));
                                 if (perReqTimeoutMs > 0) {
                                     ifl.future.get(perReqTimeoutMs, TimeUnit.MILLISECONDS);
                                 } else {
                                     ifl.future.get();
                                 }
                                 long latencyNs = System.nanoTime() - reqStartNs;
-                                int idx = sampleIdx.getAndIncrement();
-                                if (idx < samples.length) {
-                                    samples[idx] = new Sample(reqStartWallMs, latencyNs);
-                                }
+                                addSample(samples, sampleIdx,
+                                        new Sample(System.currentTimeMillis(), latencyNs, 0, 1, 0, 0));
                                 success.incrementAndGet();
                             } catch (TimeoutException te) {
                                 // Abandon the request so a late reply does not leak,
@@ -354,8 +362,12 @@ public final class EtcdStyleBenchmarkClient {
                                 if (ifl != null) {
                                     ifl.connection.cancel(ifl.seq);
                                 }
+                                addSample(samples, sampleIdx,
+                                        new Sample(System.currentTimeMillis(), 0L, 0, 0, 1, 0));
                                 timeouts.incrementAndGet();
                             } catch (IOException | ExecutionException e) {
+                                addSample(samples, sampleIdx,
+                                        new Sample(System.currentTimeMillis(), 0L, 0, 0, 0, 1));
                                 errors.incrementAndGet();
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
@@ -417,10 +429,24 @@ public final class EtcdStyleBenchmarkClient {
         }
     }
 
+    private static void addSample(Sample[] samples, AtomicInteger sampleIdx, Sample sample) {
+        int idx = sampleIdx.getAndIncrement();
+        if (idx < samples.length) {
+            samples[idx] = sample;
+        }
+    }
+
     private static void printResults(Args args, List<Sample> samples,
                                      long startWallMs, long endWallMs,
                                      long sent, long success, long errors, long timeouts) {
-        int count = samples.size();
+        List<Sample> successfulSamples = new ArrayList<>();
+        for (Sample s : samples) {
+            if (s.success > 0) {
+                successfulSamples.add(s);
+            }
+        }
+
+        int count = successfulSamples.size();
         double totalSecs = (endWallMs - startWallMs) / 1000.0;
         if (totalSecs <= 0) {
             totalSecs = 1e-9;
@@ -428,7 +454,7 @@ public final class EtcdStyleBenchmarkClient {
 
         long[] latNs = new long[count];
         for (int i = 0; i < count; i++) {
-            latNs[i] = samples.get(i).latencyNs;
+            latNs[i] = successfulSamples.get(i).latencyNs;
         }
         Arrays.sort(latNs);
 
@@ -504,16 +530,22 @@ public final class EtcdStyleBenchmarkClient {
     }
 
     private static void printPerSecond(List<Sample> samples, double targetRps) {
-        // Keyed by start-wallclock second (matches etcd report.timeseries semantics).
+        // Keyed by event wall-clock second: sends at send time, successes at
+        // completion time, and failed outcomes at failure time.
         TreeMap<Long, long[]> bySecond = new TreeMap<>();
         for (Sample s : samples) {
-            long sec = s.startWallMs / 1000L;
+            long sec = s.wallMs / 1000L;
             long[] v = bySecond.get(sec);
             if (v == null) {
-                // [count, sumNs, minNs, maxNs]
-                bySecond.put(sec, new long[]{1, s.latencyNs, s.latencyNs, s.latencyNs});
-            } else {
-                v[0]++;
+                // [success, sumNs, minNs, maxNs, sent, timeout, error]
+                v = new long[]{0, 0, Long.MAX_VALUE, 0, 0, 0, 0};
+                bySecond.put(sec, v);
+            }
+            v[4] += s.sent;
+            v[5] += s.timeout;
+            v[6] += s.error;
+            if (s.success > 0) {
+                v[0] += s.success;
                 v[1] += s.latencyNs;
                 if (s.latencyNs < v[2]) v[2] = s.latencyNs;
                 if (s.latencyNs > v[3]) v[3] = s.latencyNs;
@@ -521,14 +553,14 @@ public final class EtcdStyleBenchmarkClient {
         }
         for (Map.Entry<Long, long[]> e : bySecond.entrySet()) {
             long[] v = e.getValue();
-            long count = v[0];
-            double minMs = v[2] / 1e6;
-            double avgMs = (v[1] / (double) count) / 1e6;
-            double maxMs = v[3] / 1e6;
+            long successCount = v[0];
+            double minMs = successCount == 0 ? 0.0 : v[2] / 1e6;
+            double avgMs = successCount == 0 ? 0.0 : (v[1] / (double) successCount) / 1e6;
+            double maxMs = successCount == 0 ? 0.0 : v[3] / 1e6;
             System.out.printf(Locale.US,
                     "  %d,%.2f,%.2f,%.2f,%d,%.2f,%d,%d,%d,%d,%d%n",
-                    e.getKey(), minMs, avgMs, maxMs, count,
-                    targetRps, count, count, 0L, 0L, 0L);
+                    e.getKey(), minMs, avgMs, maxMs, successCount,
+                    targetRps, v[4], successCount, v[5], v[6], 0L);
         }
     }
 

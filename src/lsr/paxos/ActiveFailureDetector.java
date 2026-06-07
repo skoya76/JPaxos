@@ -416,7 +416,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
             Integer previousSendTimeout = perFollowerSendTimeouts.put(sender, newSendTimeout);
             boolean rescheduled = rescheduleFollowerFromLastSendLocked(sender, newSendTimeout);
             if (previousSendTimeout == null || previousSendTimeout.intValue() != newSendTimeout) {
-                logger.info("Dynatune applied per-follower heartbeat interval: view={} replica={} " +
+                logger.debug("Dynatune applied per-follower heartbeat interval: view={} replica={} " +
                             "oldIntervalMs={} newIntervalMs={} measuredRttMs={}",
                         view, sender, previousSendTimeout, newSendTimeout, rtt);
             }
@@ -591,7 +591,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         }
         if (!followerTuningStarted) {
             followerTuningStarted = true;
-            logger.info("Dynatune follower tuning started: view={} rttCount={} idCount={} minRequired={}",
+            logger.debug("Dynatune follower tuning started: view={} rttCount={} idCount={} minRequired={}",
                     view, observedRtts.size(), observedHeartbeatIds.size(), minListSize);
         }
         double mean = computeMean(observedRtts);
@@ -601,7 +601,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         int oldSuspectTimeout = suspectTimeout;
         if (newSuspectTimeout > 0 && newSuspectTimeout != oldSuspectTimeout) {
             setSuspectTimeout(newSuspectTimeout);
-            logger.info("Dynatune updated E_t(suspectTimeout): view={} oldMs={} newMs={} samples={}",
+            logger.debug("Dynatune updated E_t(suspectTimeout): view={} oldMs={} newMs={} samples={}",
                     view, oldSuspectTimeout, newSuspectTimeout, observedRtts.size());
         }
         lastComputedEt = newSuspectTimeout;
@@ -612,9 +612,7 @@ final public class ActiveFailureDetector implements Runnable, FailureDetector {
         if (suggestedInterval > 0) {
             lastSuggestedHeartbeatInterval = suggestedInterval;
         }
-        // Keep this at INFO so experiment log collectors can recover the full Dynatune
-        // tuning timeline without requiring debug logging in the container.
-        logger.info(
+        logger.debug(
                 "Dynatune follower recalculated timeouts: view={} leader={} rttMeanMs={} rttStdDevMs={} " +
                 "packetLossRate={} etMs={} suspectTimeoutMs={} heartbeatIntervalMs={} samplesRtt={} samplesId={}",
                 view, processDescriptor.getLeaderOfView(view), mean, stddev, packetLossRate, et,

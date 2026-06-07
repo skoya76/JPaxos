@@ -1,6 +1,7 @@
 package lsr.paxos;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayDeque;
 import java.lang.reflect.Field;
@@ -139,8 +140,6 @@ public class ActiveFailureDetectorTest {
             return (ArrayDeque<Integer>) method.invoke(detector, now);
         }
     }
-
->>>>>>> 9c703d7 (Reschedule DynaTune heartbeats from last send)
     private static class StubNetwork extends Network {
         @Override
         protected void send(Message message, int destination) {
